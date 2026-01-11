@@ -1,3 +1,4 @@
+
 export type TournamentType = 'TEST' | 'LIMITED_OVERS';
 
 export interface Team {
@@ -6,18 +7,25 @@ export interface Team {
   logoUrl?: string;
   owner?: string;
   // Stats
+  seriesPlayed: number;
   matchesPlayed: number;
   matchesWon: number;
   matchesLost: number;
+  matchesDrawn: number;
   matchesTie: number;
+  matchesNR: number;
+  // Points
+  basePoints: number; // From matches
+  bonusPoints: number; // From series
+  penaltyPoints: number; // Deducted
+  totalPoints: number; // Net points
+  pct: number; // Points Percentage
+  // Extra (Limited Overs)
   runsScored: number;
   oversFaced: number;
   runsConceded: number;
   oversBowled: number;
-  penalties: number;
-  points: number;
-  pct?: number; // For Test Matches
-  nrr?: number; // For Limited Overs
+  nrr?: number; 
 }
 
 export interface Stadium {
@@ -31,7 +39,7 @@ export type MatchResultType = 'T1_WIN' | 'T2_WIN' | 'DRAW' | 'TIE' | 'NO_RESULT'
 export interface Match {
   id: string;
   round: number;
-  seriesId?: string; // Grouping for Test matches
+  seriesId: string; 
   team1Id: string;
   team2Id: string;
   venueId: string;
@@ -39,36 +47,32 @@ export interface Match {
   winnerId?: string;
   resultType?: MatchResultType;
   notes?: string;
-  // Limited Overs Specific
   t1Runs?: number;
   t1Wickets?: number;
-  t1Overs?: number; // Format: 19.3
+  t1Overs?: number; 
   t2Runs?: number;
   t2Wickets?: number;
-  t2Overs?: number; // Format: 19.3
+  t2Overs?: number; 
   tossWinnerId?: string;
   isDlsApplied?: boolean;
 }
 
 export interface SeriesGroup {
   id: string;
+  round: number;
   team1Id: string;
   team2Id: string;
-  matches: Match[];
-  status: 'INCOMPLETE' | 'IN_PROGRESS' | 'COMPLETED';
-  completedCount: number;
-  totalCount: number;
-  tournamentRound: number;
+  status: 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED';
+  matchIds: string[];
 }
 
 export interface ResultLog {
   id: string;
-  matchId: string;
-  oldResult: string;
-  newResult: string;
-  editedBy: string;
-  timestamp: string;
+  targetId: string; // matchId or seriesId
+  type: 'UNLOCK' | 'EDIT' | 'DELETE' | 'PENALTY';
   reason: string;
+  adminName: string;
+  timestamp: string;
 }
 
 export interface PenaltyRecord {
@@ -88,7 +92,6 @@ export interface TournamentConfig {
   pointsForWin: number;
   pointsForDraw: number;
   pointsForLoss: number;
-  // Series Bonus Logic
   countSeriesBonus: boolean;
   pointsForSeriesWin: number;
   pointsForSeriesDraw: number;
@@ -111,9 +114,11 @@ export interface Tournament {
   createdDate: string;
   season?: string;
   status?: TournamentStatus;
+  isLocked?: boolean;
   teams: Team[];
   stadiums: Stadium[];
   matches: Match[];
+  series?: SeriesGroup[];
   penalties: PenaltyRecord[];
   logs?: ResultLog[];
   config: TournamentConfig;
@@ -123,4 +128,4 @@ export interface Tournament {
 
 export type AppView = 'MAIN' | 'WORKSPACE';
 export type MainTab = 'CREATE' | 'MANAGE';
-export type WorkspaceTab = 'INFO' | 'SCHEDULE' | 'RESULTS' | 'POINTS' | 'DISTRIBUTION' | 'PLAYOFFS' | 'SETTINGS';
+export type WorkspaceTab = 'DASHBOARD' | 'INFO' | 'SCHEDULE' | 'RESULTS' | 'POINTS' | 'SETTINGS';

@@ -164,7 +164,7 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
                      (sInR.some(s => s.status !== 'NOT_STARTED') ? 'IN_PROGRESS' : 'NOT_STARTED');
       const matchCount = sInR.reduce((sum, s) => sum + s.matchIds.length, 0);
       return { num: rNum, series: sInR, status, matchCount };
-    });
+    }) as { num: number; series: SeriesGroup[]; status: SeriesGroup['status']; matchCount: number }[];
   }, [tournament.series]);
 
   // --- ACTIONS ---
@@ -300,9 +300,9 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
       if (s.id === seriesId) {
         const remainingMs = s.matchIds.filter(id => id !== matchId);
         const actualMs = updatedMatches.filter(m => m.seriesId === s.id);
-        const status = actualMs.every(m => m.status === 'COMPLETED') ? 'COMPLETED' : 
-                       (actualMs.some(m => m.status === 'COMPLETED') ? 'IN_PROGRESS' : 'NOT_STARTED');
-        return { ...s, matchIds: remainingMs, status };
+        const statusStr = actualMs.every(m => m.status === 'COMPLETED') ? 'COMPLETED' : 
+                          (actualMs.some(m => m.status === 'COMPLETED') ? 'IN_PROGRESS' : 'NOT_STARTED');
+        return { ...s, matchIds: remainingMs, status: statusStr as SeriesGroup['status'] };
       }
       return s;
     });
@@ -1349,7 +1349,8 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
                    const updatedMatches = tournament.matches.map(m => m.id === confirmingAction.matchId ? { ...m, status: 'COMPLETED' as const, resultType: resultForm.resultType, winnerId: resultForm.winnerId } : m);
                    const updatedSeries = tournament.series?.map(s => {
                     const sMs = updatedMatches.filter(m => m.seriesId === s.id);
-                    return { ...s, status: sMs.every(m => m.status === 'COMPLETED') ? 'COMPLETED' : (sMs.some(m => m.status === 'COMPLETED') ? 'IN_PROGRESS' : 'NOT_STARTED') } as SeriesGroup;
+                    const statusStr = sMs.every(m => m.status === 'COMPLETED') ? 'COMPLETED' : (sMs.some(m => m.status === 'COMPLETED') ? 'IN_PROGRESS' : 'NOT_STARTED');
+                    return { ...s, status: statusStr as SeriesGroup['status'] };
                   });
                   onUpdateTournament?.({ ...tournament, matches: updatedMatches, series: updatedSeries, status: 'ONGOING' });
                   setConfirmingAction(null);
@@ -1371,7 +1372,8 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
                    const updatedMatches = tournament.matches.map(m => m.id === confirmingAction?.matchId ? { ...m, status: 'NOT_STARTED' as const, resultType: undefined, winnerId: undefined } : m);
                    const updatedSeries = tournament.series?.map(s => {
                     const sMs = updatedMatches.filter(m => m.seriesId === s.id);
-                    return { ...s, status: sMs.every(m => m.status === 'COMPLETED') ? 'COMPLETED' : (sMs.some(m => m.status === 'COMPLETED') ? 'IN_PROGRESS' : 'NOT_STARTED') } as SeriesGroup;
+                    const statusStr = sMs.every(m => m.status === 'COMPLETED') ? 'COMPLETED' : (sMs.some(m => m.status === 'COMPLETED') ? 'IN_PROGRESS' : 'NOT_STARTED');
+                    return { ...s, status: statusStr as SeriesGroup['status'] };
                   });
                   onUpdateTournament?.({ ...tournament, matches: updatedMatches, series: updatedSeries });
                   setConfirmingAction(null);

@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useRef } from 'react';
 import { Tournament, WorkspaceTab, Team, Match, MatchResultType, SeriesGroup, PenaltyRecord } from '../types';
 import BrutalistCard from './BrutalistCard';
@@ -39,9 +38,10 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
   const roundScheduleRef = useRef<HTMLDivElement>(null);
   
   const [confirmingAction, setConfirmingAction] = useState<{ 
-    type: 'SAVE_RESULT' | 'REGENERATE_SCHEDULE' | 'ADMIN_UNLOCK' | 'DELETE_PENALTY' | 'LOCK_TOURNAMENT', 
+    type: 'SAVE_RESULT' | 'REGENERATE_SCHEDULE' | 'ADMIN_UNLOCK' | 'DELETE_PENALTY' | 'LOCK_TOURNAMENT' | 'ADD_MATCH' | 'REMOVE_MATCH', 
     matchId?: string,
-    penaltyId?: string
+    penaltyId?: string,
+    seriesId?: string
   } | null>(null);
 
   const [resultForm, setResultForm] = useState({
@@ -49,6 +49,16 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
     resultType: 'DRAW' as MatchResultType,
     notes: ''
   });
+
+  const [addMatchForm, setAddMatchForm] = useState({
+    venueId: tournament.stadiums[0]?.id || ''
+  });
+
+  // Series Range Parsing
+  const seriesRange = useMemo(() => {
+    const parts = (tournament.config.seriesLength || '3-5').split('-').map(Number);
+    return { min: parts[0] || 1, max: parts[1] || parts[0] || 5 };
+  }, [tournament.config.seriesLength]);
 
   // --- DOWNLOAD LOGIC ---
   const handleDownloadImage = async (ref: React.RefObject<HTMLDivElement | null>, fileName: string) => {
@@ -197,9 +207,6 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
     if (teams.length < 2) return alert("Min 2 teams required!");
     const matches: Match[] = [];
     const series: SeriesGroup[] = [];
-    const range = (tournament.config.seriesLength || '3-5').split('-').map(Number);
-    const minLen = range[0] || 3;
-    const maxLen = range[1] || range[0] || 5;
     const teamIds = [...teams.map(t => t.id)];
     if (teamIds.length % 2 !== 0) teamIds.push('BYE');
     const roundsCount = teamIds.length - 1;
@@ -211,7 +218,7 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
         if (t1 !== 'BYE' && t2 !== 'BYE') {
           const sId = `S-R${r+1}-P${i}`;
           const mIds: string[] = [];
-          const bestLen = Math.floor(Math.random() * (maxLen - minLen + 1)) + minLen;
+          const bestLen = seriesRange.min; // Start with minimum allowed
           for (let m = 0; m < bestLen; m++) {
             const mId = `M-${sId}-T${m+1}`;
             mIds.push(mId);
@@ -236,6 +243,73 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
     setConfirmingAction(null);
     setSecurityInput('');
     setScheduleLevel('OVERVIEW');
+  };
+
+  // --- DYNAMIC MATCH MANAGEMENT ---
+  const handleAddMatchToSeries = () => {
+    const seriesId = drillDownSeries;
+    if (!seriesId) return;
+    const series = tournament.series?.find(s => s.id === seriesId);
+    if (!series) return;
+
+    if (series.matchIds.length >= seriesRange.max) {
+      alert(`Cannot add match. Series limit of ${seriesRange.max} reached.`);
+      return;
+    }
+
+    const newMatchId = `M-${seriesId}-T${series.matchIds.length + 1}-${Date.now()}`;
+    const newMatch: Match = {
+      id: newMatchId,
+      round: series.round,
+      seriesId: series.id,
+      team1Id: series.team1Id,
+      team2Id: series.team2Id,
+      venueId: addMatchForm.venueId,
+      status: 'NOT_STARTED'
+    };
+
+    const updatedMatches = [...tournament.matches, newMatch];
+    const updatedSeries = tournament.series?.map(s => 
+      s.id === seriesId ? { ...s, matchIds: [...s.matchIds, newMatchId] } : s
+    );
+
+    onUpdateTournament?.({ ...tournament, matches: updatedMatches, series: updatedSeries });
+    setConfirmingAction(null);
+  };
+
+  const handleRemoveMatchFromSeries = (matchId: string) => {
+    const seriesId = drillDownSeries;
+    if (!seriesId) return;
+    const series = tournament.series?.find(s => s.id === seriesId);
+    if (!series) return;
+
+    if (series.matchIds.length <= seriesRange.min) {
+      alert(`Cannot remove match. Minimum series length of ${seriesRange.min} required.`);
+      return;
+    }
+
+    const matchToRemove = tournament.matches.find(m => m.id === matchId);
+    if (matchToRemove?.status === 'COMPLETED') {
+       if (securityInput.trim().toLowerCase() !== tournament.name.trim().toLowerCase()) {
+         return alert("Security Verification Failed.");
+       }
+    }
+
+    const updatedMatches = tournament.matches.filter(m => m.id !== matchId);
+    const updatedSeries = tournament.series?.map(s => {
+      if (s.id === seriesId) {
+        const remainingMs = s.matchIds.filter(id => id !== matchId);
+        const actualMs = updatedMatches.filter(m => m.seriesId === s.id);
+        const status = actualMs.every(m => m.status === 'COMPLETED') ? 'COMPLETED' : 
+                       (actualMs.some(m => m.status === 'COMPLETED') ? 'IN_PROGRESS' : 'NOT_STARTED');
+        return { ...s, matchIds: remainingMs, status };
+      }
+      return s;
+    });
+
+    onUpdateTournament?.({ ...tournament, matches: updatedMatches, series: updatedSeries });
+    setConfirmingAction(null);
+    setSecurityInput('');
   };
 
   // --- HELPERS ---
@@ -933,13 +1007,17 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
 
             {scheduleLevel === 'MATCHES' && (
               <div className="space-y-6">
-                <BrutalistButton variant="secondary" compact onClick={() => setScheduleLevel('SERIES')}>← Back to Series</BrutalistButton>
+                <div className="flex justify-between items-center no-print">
+                   <BrutalistButton variant="secondary" compact onClick={() => setScheduleLevel('SERIES')}>← Back to Series</BrutalistButton>
+                   <BrutalistButton variant="success" compact onClick={() => setConfirmingAction({ type: 'ADD_MATCH' })}>+ ADD MATCH</BrutalistButton>
+                </div>
                 <div className="bg-white brutalist-border shadow-[12px_12px_0px_black] overflow-hidden">
                   <table className="w-full text-left">
                     <thead className="bg-gray-100 font-black uppercase text-[10px] border-b-4 border-black">
                       <tr>
-                        <th className="p-5 border-r-2 border-black w-24">Entry #</th>
+                        <th className="p-5 border-r-2 border-black w-24">Match #</th>
                         <th className="p-5 border-r-2 border-black">Outcome / Result</th>
+                        <th className="p-5 border-r-2 border-black">Venue</th>
                         <th className="p-5 border-r-2 border-black text-center">Match Points</th>
                         <th className="p-5 border-r-2 border-black text-center">Status</th>
                         <th className="p-5 text-center">Action</th>
@@ -950,6 +1028,7 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
                           const t1 = tournament.teams.find(t => t.id === m.team1Id);
                           const t2 = tournament.teams.find(t => t.id === m.team2Id);
                           const winner = tournament.teams.find(t => t.id === m.winnerId);
+                          const venue = tournament.stadiums.find(s => s.id === m.venueId);
                           
                           let t1Pts = 0, t2Pts = 0;
                           if (m.status === 'COMPLETED') {
@@ -960,7 +1039,7 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
 
                           return (
                             <tr key={m.id} className="hover:bg-emerald-50 font-black uppercase text-xs transition-colors">
-                              <td className="p-5 border-r-2 border-black mono italic bg-gray-50">DAY_{idx+1}</td>
+                              <td className="p-5 border-r-2 border-black mono italic bg-gray-50">GAME_{idx+1}</td>
                               <td className="p-5 border-r-2 border-black">
                                  {m.status === 'COMPLETED' ? (
                                     <div className="flex flex-col">
@@ -968,6 +1047,9 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
                                        <span className="mono text-[8px] opacity-40">{t1?.name} vs {t2?.name}</span>
                                     </div>
                                  ) : <span className="italic text-gray-300">AWAITING COMMITTAL...</span>}
+                              </td>
+                              <td className="p-5 border-r-2 border-black mono text-[10px] text-gray-400">
+                                 {venue?.name || 'V-TBD'}
                               </td>
                               <td className="p-5 border-r-2 border-black text-center mono">
                                  {m.status === 'COMPLETED' ? (
@@ -986,12 +1068,19 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
                                     {m.status}
                                  </span>
                               </td>
-                              <td className="p-5 text-center">
+                              <td className="p-5 text-center flex items-center justify-center gap-2">
                                 {m.status === 'COMPLETED' ? (
                                   <BrutalistButton variant="danger" compact onClick={() => setConfirmingAction({ type: 'ADMIN_UNLOCK', matchId: m.id })}>Unlock</BrutalistButton>
                                 ) : (
                                   <BrutalistButton variant="success" compact onClick={() => { setConfirmingAction({ type: 'SAVE_RESULT', matchId: m.id }); setResultForm({ winnerId: '', resultType: 'T1_WIN', notes: '' }); }}>Commit</BrutalistButton>
                                 )}
+                                <BrutalistButton variant="accent" compact onClick={() => {
+                                   if (m.status === 'COMPLETED') {
+                                      setConfirmingAction({ type: 'REMOVE_MATCH', matchId: m.id });
+                                   } else {
+                                      handleRemoveMatchFromSeries(m.id);
+                                   }
+                                }}>REMOVE</BrutalistButton>
                               </td>
                             </tr>
                           );
@@ -1191,6 +1280,49 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
               </div>
             </div>
           </BrutalistCard>
+        </div>
+      )}
+
+      {confirmingAction?.type === 'ADD_MATCH' && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 p-4 no-print animate-in fade-in duration-200">
+           <BrutalistCard title="ADD NEW TEST MATCH" className="max-w-md w-full bg-white">
+             <div className="space-y-6 py-4">
+                <div className="space-y-2">
+                   <label className="font-black uppercase text-[10px]">Select Venue</label>
+                   <select 
+                      className="w-full brutalist-border p-3 font-black uppercase bg-white text-black"
+                      value={addMatchForm.venueId}
+                      onChange={e => setAddMatchForm({ venueId: e.target.value })}
+                   >
+                      {tournament.stadiums.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                   </select>
+                </div>
+                <div className="flex gap-2">
+                   <BrutalistButton variant="success" className="flex-1 py-4" onClick={handleAddMatchToSeries}>CONFIRM ADD</BrutalistButton>
+                   <BrutalistButton variant="secondary" className="flex-1 py-4" onClick={() => setConfirmingAction(null)}>CANCEL</BrutalistButton>
+                </div>
+             </div>
+           </BrutalistCard>
+        </div>
+      )}
+
+      {confirmingAction?.type === 'REMOVE_MATCH' && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/90 p-4 no-print animate-in fade-in">
+           <BrutalistCard title="⚠️ DANGER: REMOVE COMPLETED MATCH" className="max-w-md w-full bg-white border-rose-600">
+             <div className="space-y-4 py-2">
+                <p className="font-black uppercase text-xs text-rose-600">Warning: This match has results. Deleting it will wipe all associated data and points. Type the exact tournament name to confirm.</p>
+                <input 
+                   placeholder="VERIFY TOURNAMENT NAME" 
+                   className="w-full brutalist-border p-4 font-black uppercase bg-white text-black outline-none border-rose-600" 
+                   value={securityInput} 
+                   onChange={e => setSecurityInput(e.target.value)} 
+                />
+                <div className="flex gap-2">
+                   <BrutalistButton variant="danger" className="flex-1 py-3" onClick={() => handleRemoveMatchFromSeries(confirmingAction.matchId!)}>PERMANENT DELETE</BrutalistButton>
+                   <BrutalistButton variant="secondary" className="flex-1 py-3" onClick={() => { setConfirmingAction(null); setSecurityInput(''); }}>CANCEL</BrutalistButton>
+                </div>
+             </div>
+           </BrutalistCard>
         </div>
       )}
 

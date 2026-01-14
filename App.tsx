@@ -23,16 +23,9 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // Save to LocalStorage - Wrapped in try-catch to prevent white screen on quota errors
+  // Save to LocalStorage
   useEffect(() => {
-    try {
-      if (tournaments.length > 0) {
-        localStorage.setItem('cad_tournaments', JSON.stringify(tournaments));
-      }
-    } catch (e) {
-      console.error("LocalStorage Save Failed (likely quota exceeded due to large images):", e);
-      alert("Storage full! Try removing some high-resolution logos or deleting old tournaments.");
-    }
+    localStorage.setItem('cad_tournaments', JSON.stringify(tournaments));
   }, [tournaments]);
 
   const handleCreateTournament = (newTournament: Tournament) => {
@@ -73,7 +66,7 @@ const App: React.FC = () => {
               Cricket Association of Discord
             </h1>
             <p className="text-sm md:text-lg font-bold uppercase mono tracking-widest text-gray-600">
-              WTC Manager v1.0
+              Tournament Organiser v1.2.1
             </p>
           </div>
         </div>

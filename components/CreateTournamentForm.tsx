@@ -1,6 +1,6 @@
 
-import React, { useState, useEffect, useRef } from 'react';
-import { Tournament, TournamentType, Team, Stadium, TournamentConfig, TournamentHeader, PenaltyRecord } from '../types';
+import React, { useState, useEffect } from 'react';
+import { Tournament, TournamentType, Team, Stadium, TournamentConfig, TournamentHeader } from '../types';
 import BrutalistCard from './BrutalistCard';
 import BrutalistButton from './BrutalistButton';
 
@@ -17,8 +17,6 @@ const CreateTournamentForm: React.FC<CreateTournamentFormProps> = ({ onCreate })
   const [type, setType] = useState<TournamentType>('TEST');
   const [seriesLength, setSeriesLength] = useState('3-5');
   const [customSeries, setCustomSeries] = useState('');
-  const [overs, setOvers] = useState('20');
-  const [customOvers, setCustomOvers] = useState('');
   const [numTeams, setNumTeams] = useState(8);
   const [teams, setTeams] = useState<Team[]>([]);
   const [stadiums, setStadiums] = useState<Stadium[]>([]);
@@ -80,13 +78,45 @@ const CreateTournamentForm: React.FC<CreateTournamentFormProps> = ({ onCreate })
     setTeams(newTeams);
   }, [numTeams]);
 
+  // Utility to resize and compress images to save LocalStorage space
   const handleImageUpload = (file: File | null, callback: (base64: string) => void) => {
     if (!file) return;
+    
     const reader = new FileReader();
-    reader.onloadend = () => {
-      callback(reader.result as string);
-    };
     reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 256;
+        const MAX_HEIGHT = 256;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > MAX_WIDTH) {
+            height *= MAX_WIDTH / width;
+            width = MAX_WIDTH;
+          }
+        } else {
+          if (height > MAX_HEIGHT) {
+            width *= MAX_HEIGHT / height;
+            height = MAX_HEIGHT;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          // Use low-mid quality to drastically reduce data size
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+          callback(dataUrl);
+        }
+      };
+    };
   };
 
   const fillAiTeams = () => {
@@ -130,7 +160,6 @@ const CreateTournamentForm: React.FC<CreateTournamentFormProps> = ({ onCreate })
       header: headerConfig,
       config: {
         seriesLength: seriesLength === 'Custom' ? customSeries : seriesLength,
-        oversPerMatch: type === 'LIMITED_OVERS' ? (overs === 'Custom' ? customOvers : overs) : undefined,
         scheduleFormat,
         playoffSystem,
         pointsForWin: winPts,

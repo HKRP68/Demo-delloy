@@ -66,7 +66,7 @@ const App: React.FC = () => {
               Cricket Association of Discord
             </h1>
             <p className="text-sm md:text-lg font-bold uppercase mono tracking-widest text-gray-600">
-              Tournament Organiser v1.2.1
+              WTC Manager v1.0
             </p>
           </div>
         </div>

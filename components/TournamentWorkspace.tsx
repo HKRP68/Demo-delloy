@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useRef } from 'react';
-import { Tournament, WorkspaceTab, Team, Match, MatchResultType, SeriesGroup, Stadium, PenaltyRecord } from '../types';
+import { Tournament, WorkspaceTab, Team, Match, MatchResultType, SeriesGroup, PenaltyRecord } from '../types';
 import BrutalistCard from './BrutalistCard';
 import BrutalistButton from './BrutalistButton';
-import { toJpeg } from 'html-to-image';
+import * as htmlToImage from 'html-to-image';
 
 interface TournamentWorkspaceProps {
   tournament: Tournament;
@@ -10,53 +10,47 @@ interface TournamentWorkspaceProps {
   onUpdateTournament?: (updated: Tournament) => void;
 }
 
-type ScheduleLevel = 'OVERVIEW' | 'DISTRIBUTION' | 'ROUNDS' | 'SERIES' | 'MATCHES' | 'FULL_SCHEDULE';
+type ScheduleLevel = 'OVERVIEW' | 'ROUNDS' | 'SERIES' | 'MATCHES' | 'FULL_SCHEDULE';
 
 const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, onExit, onUpdateTournament }) => {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('DASHBOARD');
-  const [scheduleLevel, setScheduleLevel] = useState<ScheduleLevel>('OVERVIEW');
+  const [scheduleLevel, setScheduleLevel] = useState<ScheduleLevel>('ROUNDS');
   const [drillDownRound, setDrillDownRound] = useState<number | null>(null);
   const [drillDownSeries, setDrillDownSeries] = useState<string | null>(null);
-  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   
-  const [isEditingIdentity, setIsEditingIdentity] = useState(false);
-  const [tempTournamentName, setTempTournamentName] = useState(tournament.name);
-  const [securityInput, setSecurityInput] = useState('');
+  // Master Fixtures Filters
+  const [fixtureTeam, setFixtureTeam] = useState('');
+  const [fixtureRound, setFixtureRound] = useState('');
+  const [fixtureStatus, setFixtureStatus] = useState('');
 
-  // Refs for capture
-  const pointsTableRef = useRef<HTMLDivElement>(null);
-  const fullScheduleRef = useRef<HTMLDivElement>(null);
-  const roundCaptureRef = useRef<HTMLDivElement>(null);
-  const distributionTableRef = useRef<HTMLDivElement>(null);
-  
-  const [penaltyForm, setPenaltyForm] = useState({
-    teamId: '',
-    points: 0,
-    reason: ''
-  });
-
-  const [columnVisibility, setColumnVisibility] = useState<Record<string, boolean>>({
-    standing: true,
-    team: true,
-    sPlayed: false,
-    sDone: false,
-    sLeft: false,
-    mPlayed: true,
-    mWon: true,
-    mDrawn: true,
-    mLost: true,
-    totalPts: true,
-    maxPts: true,
+  // Column Visibility State
+  const [visibleColumns, setVisibleColumns] = useState({
+    seriesPlayed: false,
+    seriesCompleted: false,
+    seriesLeft: false,
+    matchesPlayed: true,
+    matchesWon: true,
+    matchesDrawn: true,
+    matchesLost: true,
+    totalPoints: true,
+    maxPoints: true,
     pct: true,
-    penalty: true,
-    finalPts: false
+    penalties: true,
+    finalPoints: false
   });
 
+  const [securityInput, setSecurityInput] = useState('');
+  const [penaltyForm, setPenaltyForm] = useState({ teamId: '', points: 0, reason: '' });
+
+  // Refs for Image Download
+  const pointsTableRef = useRef<HTMLDivElement>(null);
+  const roundsRef = useRef<HTMLDivElement>(null);
+  const fixturesRef = useRef<HTMLDivElement>(null);
+  
   const [confirmingAction, setConfirmingAction] = useState<{ 
-    type: 'SAVE_RESULT' | 'REGENERATE_SCHEDULE' | 'ADMIN_UNLOCK' | 'DELETE_PENALTY' | 'LOCK_TOURNAMENT' | 'ADD_MATCH' | 'REMOVE_MATCH', 
+    type: 'SAVE_RESULT' | 'REGENERATE_SCHEDULE' | 'ADMIN_UNLOCK' | 'ADD_MATCH' | 'REMOVE_MATCH' | 'ADD_PENALTY', 
     matchId?: string,
-    penaltyId?: string,
-    seriesId?: string
+    penaltyId?: string
   } | null>(null);
 
   const [resultForm, setResultForm] = useState({
@@ -64,6 +58,8 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
     resultType: 'DRAW' as MatchResultType,
     notes: ''
   });
+
+  const [addMatchVenue, setAddMatchVenue] = useState(tournament.stadiums[0]?.id || 'V1');
 
   const seriesRange = useMemo(() => {
     const raw = tournament.config.seriesLength || '3-5';
@@ -73,352 +69,265 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
     return { min, max };
   }, [tournament.config.seriesLength]);
 
-  const handleDownloadImage = async (ref: React.RefObject<HTMLDivElement | null>, fileName: string) => {
-    if (!ref.current) return;
-    
-    try {
-      // Use explicit dimensions from the scrollable area
-      const width = ref.current.scrollWidth;
-      const height = ref.current.scrollHeight;
+  // --- HELPER TO CALCULATE POINTS FOR A SPECIFIC MATCH ---
+  const getMatchPoints = (match: Match) => {
+    if (match.status !== 'COMPLETED') return { t1: 0, t2: 0 };
+    const { pointsForWin, pointsForDraw, pointsForLoss } = tournament.config;
+    if (match.resultType === 'T1_WIN') return { t1: pointsForWin, t2: pointsForLoss };
+    if (match.resultType === 'T2_WIN') return { t1: pointsForLoss, t2: pointsForWin };
+    if (match.resultType === 'DRAW' || match.resultType === 'TIE') return { t1: pointsForDraw, t2: pointsForDraw };
+    return { t1: 0, t2: 0 };
+  };
 
-      // Browser canvas limits are usually around 16k-32k.
-      // If table is too big, warn or force ratio 1.
-      const isHuge = width > 4000 || height > 4000;
+  // --- HELPER TO CALCULATE PERFORMANCE FOR A SERIES ---
+  const getSeriesPerformance = (seriesId: string) => {
+    const series = tournament.series?.find(s => s.id === seriesId);
+    if (!series) return null;
 
-      const options = {
-        quality: 0.95,
-        backgroundColor: '#ffffff',
-        width: width,
-        height: height,
-        style: {
-          transform: 'none',
-          margin: '0',
-          padding: '20px',
-          width: `${width}px`,
-          height: `${height}px`,
-          maxWidth: 'none',
-          maxHeight: 'none',
-          overflow: 'visible'
-        },
-        pixelRatio: isHuge ? 1 : 2,
-        cacheBust: true,
-        skipFonts: true,
-      };
+    const matches = tournament.matches.filter(m => m.seriesId === seriesId && m.status === 'COMPLETED');
+    const t1Stats = { w: 0, l: 0, d: 0, pts: 0, sWin: 0, sLoss: 0, sDraw: 0, sPts: 0 };
+    const t2Stats = { w: 0, l: 0, d: 0, pts: 0, sWin: 0, sLoss: 0, sDraw: 0, sPts: 0 };
 
-      // toJpeg is often more stable for large canvas generation than toPng
-      const dataUrl = await toJpeg(ref.current, options);
-      const link = document.createElement('a');
-      link.download = `${fileName}.jpg`;
-      link.href = dataUrl;
-      link.click();
-    } catch (err: any) {
-      console.error('Detailed Download Error:', err);
-      
-      let errorMessage = "Unknown Error";
-      if (err instanceof Error) {
-        errorMessage = err.message;
-      } else if (err && typeof err === 'object') {
-        // Handle DOMExceptions or raw objects that don't stringify well
-        errorMessage = err.name || err.message || JSON.stringify(err);
-        if (errorMessage === '{}') errorMessage = String(err);
+    matches.forEach(m => {
+      const p = getMatchPoints(m);
+      t1Stats.pts += p.t1;
+      t2Stats.pts += p.t2;
+      if (m.resultType === 'T1_WIN') { t1Stats.w++; t2Stats.l++; }
+      else if (m.resultType === 'T2_WIN') { t2Stats.w++; t1Stats.l++; }
+      else { t1Stats.d++; t2Stats.d++; }
+    });
+
+    if (series.status === 'COMPLETED' && matches.length > 0) {
+      if (t1Stats.w > t2Stats.w) {
+        t1Stats.sWin = 1; t2Stats.sLoss = 1;
+        if (tournament.config.countSeriesBonus) {
+            t1Stats.sPts = tournament.config.pointsForSeriesWin;
+            t2Stats.sPts = tournament.config.pointsForSeriesLoss;
+        }
+      } else if (t2Stats.w > t1Stats.w) {
+        t2Stats.sWin = 1; t1Stats.sLoss = 1;
+        if (tournament.config.countSeriesBonus) {
+            t2Stats.sPts = tournament.config.pointsForSeriesWin;
+            t1Stats.sPts = tournament.config.pointsForSeriesLoss;
+        }
       } else {
-        errorMessage = String(err);
+        t1Stats.sDraw = 1; t2Stats.sDraw = 1;
+        if (tournament.config.countSeriesBonus) {
+          t1Stats.sPts = tournament.config.pointsForSeriesDraw;
+          t2Stats.sPts = tournament.config.pointsForSeriesDraw;
+        }
       }
-
-      alert(`Capture Failed: ${errorMessage}\n\nSuggestion: If the table is very wide, try hiding some columns first.`);
     }
+
+    return { t1: t1Stats, t2: t2Stats };
   };
 
-  const handlePrint = () => {
-    window.print();
-  };
-
-  const handleAddPenalty = () => {
-    if (!penaltyForm.teamId || penaltyForm.points <= 0 || !penaltyForm.reason.trim()) {
-      return alert("Please fill all penalty fields correctly.");
-    }
-    const newPenalty: PenaltyRecord = {
-      id: Date.now().toString(),
-      teamId: penaltyForm.teamId,
-      points: penaltyForm.points,
-      reason: penaltyForm.reason,
-      date: new Date().toLocaleDateString()
-    };
-    const updatedPenalties = [...tournament.penalties, newPenalty];
-    onUpdateTournament?.({ ...tournament, penalties: updatedPenalties });
-    setPenaltyForm({ teamId: '', points: 0, reason: '' });
-  };
-
-  const handleRemovePenalty = (id: string) => {
-    const updatedPenalties = tournament.penalties.filter(p => p.id !== id);
-    onUpdateTournament?.({ ...tournament, penalties: updatedPenalties });
-  };
-
+  // --- STANDINGS CALCULATION ---
   const standings = useMemo(() => {
-    const stats: Record<string, Team & { playedFor: number; sWin: number; sLoss: number; sDraw: number; sDone: number; sPlayed: number }> = {};
+    const stats: Record<string, Team & { 
+      playedFor: number; 
+      seriesCompleted: number; 
+      seriesTotal: number;
+      maxPossiblePoints: number;
+    }> = {};
+
     tournament.teams.forEach(t => {
-      const playerSeries = tournament.series?.filter(s => s.team1Id === t.id || s.team2Id === t.id) || [];
-      
+      const teamSeries = (tournament.series || []).filter(s => s.team1Id === t.id || s.team2Id === t.id);
+      const totalMatchesPlanned = (tournament.matches || []).filter(m => m.team1Id === t.id || m.team2Id === t.id).length;
+
       stats[t.id] = { 
         ...t, 
-        seriesPlayed: playerSeries.length, 
-        matchesPlayed: 0, matchesWon: 0, matchesLost: 0, matchesDrawn: 0, 
+        seriesPlayed: 0, matchesPlayed: 0, matchesWon: 0, matchesLost: 0, matchesDrawn: 0, 
         matchesTie: 0, matchesNR: 0, basePoints: 0, bonusPoints: 0, penaltyPoints: 0, totalPoints: 0, pct: 0,
-        playedFor: 0, sWin: 0, sLoss: 0, sDraw: 0, sDone: 0, sPlayed: playerSeries.length
+        playedFor: 0,
+        seriesCompleted: 0,
+        seriesTotal: teamSeries.length,
+        maxPossiblePoints: (totalMatchesPlanned * tournament.config.pointsForWin) + (teamSeries.length * tournament.config.pointsForSeriesWin)
       };
     });
 
     tournament.matches.filter(m => m.status === 'COMPLETED').forEach(m => {
-      const t1 = stats[m.team1Id];
-      const t2 = stats[m.team2Id];
+      const t1 = stats[m.team1Id]; const t2 = stats[m.team2Id];
       if (!t1 || !t2) return;
-      
-      t1.matchesPlayed++;
-      t2.matchesPlayed++;
-      t1.playedFor += tournament.config.pointsForWin;
-      t2.playedFor += tournament.config.pointsForWin;
-
-      if (m.resultType === 'T1_WIN') {
-        t1.matchesWon++; t1.basePoints += tournament.config.pointsForWin;
-        t2.matchesLost++; t2.basePoints += tournament.config.pointsForLoss;
-      } else if (m.resultType === 'T2_WIN') {
-        t2.matchesWon++; t2.basePoints += tournament.config.pointsForWin;
-        t1.matchesLost++; t1.basePoints += tournament.config.pointsForLoss;
-      } else if (m.resultType === 'DRAW' || m.resultType === 'TIE') {
-        t1.matchesDrawn++; t1.basePoints += tournament.config.pointsForDraw;
-        t2.matchesDrawn++; t2.basePoints += tournament.config.pointsForDraw;
-      }
+      t1.matchesPlayed++; t2.matchesPlayed++;
+      t1.playedFor += tournament.config.pointsForWin; t2.playedFor += tournament.config.pointsForWin;
+      const pts = getMatchPoints(m);
+      t1.basePoints += pts.t1;
+      t2.basePoints += pts.t2;
+      if (m.resultType === 'T1_WIN') { t1.matchesWon++; t2.matchesLost++; }
+      else if (m.resultType === 'T2_WIN') { t2.matchesWon++; t1.matchesLost++; }
+      else { t1.matchesDrawn++; t2.matchesDrawn++; }
     });
 
-    tournament.series?.filter(s => s.status === 'COMPLETED').forEach(s => {
-      const t1 = stats[s.team1Id];
-      const t2 = stats[s.team2Id];
-      if (!t1 || !t2) return;
-      t1.sDone++;
-      t2.sDone++;
-      
-      const sMs = tournament.matches.filter(m => m.seriesId === s.id && m.status === 'COMPLETED');
-      const t1Wins = sMs.filter(m => m.winnerId === s.team1Id).length;
-      const t2Wins = sMs.filter(m => m.winnerId === s.team2Id).length;
-
-      if (t1Wins > t2Wins) { t1.sWin++; t2.sLoss++; }
-      else if (t2Wins > t1Wins) { t2.sWin++; t1.sLoss++; }
-      else if (sMs.length > 0) { t1.sDraw++; t2.sDraw++; }
-
-      if (tournament.config.countSeriesBonus) {
-        t1.playedFor += tournament.config.pointsForSeriesWin;
-        t2.playedFor += tournament.config.pointsForSeriesWin;
-        if (t1Wins > t2Wins) t1.bonusPoints += tournament.config.pointsForSeriesWin;
-        else if (t2Wins > t1Wins) t2.bonusPoints += tournament.config.pointsForSeriesWin;
-        else if (sMs.length > 0) { t1.bonusPoints += tournament.config.pointsForSeriesDraw; t2.bonusPoints += tournament.config.pointsForSeriesDraw; }
+    tournament.series?.forEach(s => {
+      const isTeam1 = stats[s.team1Id];
+      const isTeam2 = stats[s.team2Id];
+      if (s.status !== 'NOT_STARTED') {
+        if (isTeam1) isTeam1.seriesPlayed++;
+        if (isTeam2) isTeam2.seriesPlayed++;
+      }
+      if (s.status === 'COMPLETED') {
+        if (isTeam1) isTeam1.seriesCompleted++;
+        if (isTeam2) isTeam2.seriesCompleted++;
+        const perf = getSeriesPerformance(s.id);
+        if (perf) {
+          if (isTeam1) isTeam1.bonusPoints += perf.t1.sPts;
+          if (isTeam2) isTeam2.bonusPoints += perf.t2.sPts;
+        }
       }
     });
 
     tournament.penalties.forEach(p => {
-      if (stats[p.teamId]) stats[p.teamId].penaltyPoints += Math.abs(p.points);
+      if (stats[p.teamId]) stats[p.teamId].penaltyPoints += p.points;
     });
 
     return Object.values(stats).map(t => {
-      t.totalPoints = (t.basePoints + t.bonusPoints) - t.penaltyPoints;
-      t.pct = t.playedFor > 0 ? (t.totalPoints / t.playedFor) * 100 : 0;
+      t.totalPoints = t.basePoints + t.bonusPoints;
+      const finalVal = t.totalPoints - t.penaltyPoints;
+      t.pct = t.playedFor > 0 ? (finalVal / t.playedFor) * 100 : 0;
       return t;
-    }).sort((a, b) => {
-      let diff = b.pct - a.pct;
-      if (diff === 0) diff = b.totalPoints - a.totalPoints;
-      return diff;
-    });
+    }).sort((a, b) => (b.pct - a.pct) || (a.penaltyPoints - b.penaltyPoints) || (b.totalPoints - a.totalPoints));
   }, [tournament]);
+
+  const metrics = useMemo(() => {
+    const total = tournament.matches.length;
+    const completed = tournament.matches.filter(m => m.status === 'COMPLETED').length;
+    return {
+      totalMatches: total,
+      completedMatches: completed,
+      percent: total > 0 ? Math.floor((completed / total) * 100) : 0,
+      leader: standings[0]
+    };
+  }, [tournament.matches, standings]);
 
   const roundsData = useMemo(() => {
     if (!tournament.series) return [];
     const rMap: Record<number, SeriesGroup[]> = {};
-    tournament.series.forEach(s => {
-      if (!rMap[s.round]) rMap[s.round] = [];
-      rMap[s.round].push(s);
-    });
+    tournament.series.forEach(s => { if (!rMap[s.round]) rMap[s.round] = []; rMap[s.round].push(s); });
     return Object.keys(rMap).map(Number).sort((a, b) => a - b).map(rNum => {
       const sInR = rMap[rNum];
-      const statusValue = sInR.every(s => s.status === 'COMPLETED') ? 'COMPLETED' :
-                     (sInR.some(s => s.status !== 'NOT_STARTED') ? 'IN_PROGRESS' : 'NOT_STARTED');
-      const matchCount = sInR.reduce((sum, s) => sum + s.matchIds.length, 0);
-      return { 
-        num: rNum, 
-        series: sInR, 
-        status: statusValue as SeriesGroup['status'], 
-        matchCount 
-      };
+      const status = sInR.every(s => s.status === 'COMPLETED') ? 'COMPLETED' : (sInR.some(s => s.status !== 'NOT_STARTED') ? 'IN_PROGRESS' : 'NOT_STARTED');
+      return { num: rNum, series: sInR, status, matchCount: sInR.reduce((sum, s) => sum + s.matchIds.length, 0) };
     });
   }, [tournament.series]);
 
-  const toggleColumn = (col: string) => {
-    setColumnVisibility(prev => ({ ...prev, [col]: !prev[col] }));
-  };
+  // Master Fixtures Filtered Data
+  const masterFixturesData = useMemo(() => {
+    if (!tournament.series) return [];
+    return tournament.series.filter(s => {
+      const matchesTeam = !fixtureTeam || s.team1Id === fixtureTeam || s.team2Id === fixtureTeam;
+      const matchesRound = !fixtureRound || s.round === parseInt(fixtureRound);
+      const matchesStatus = !fixtureStatus || s.status === fixtureStatus;
+      return matchesTeam && matchesRound && matchesStatus;
+    }).sort((a, b) => a.round - b.round);
+  }, [tournament.series, fixtureTeam, fixtureRound, fixtureStatus]);
 
-  const showFullTable = () => {
-    const allOn: Record<string, boolean> = {};
-    Object.keys(columnVisibility).forEach(k => allOn[k] = true);
-    setColumnVisibility(allOn);
-  };
-
-  const handleSaveIdentity = () => {
-    if (securityInput.trim().toLowerCase() !== tournament.name.trim().toLowerCase()) return alert(`Security Check Failed.`);
-    onUpdateTournament?.({ ...tournament, name: tempTournamentName });
-    setIsEditingIdentity(false);
-    setSecurityInput('');
+  // --- ACTIONS ---
+  const handleSnap = (ref: React.RefObject<HTMLDivElement>, filename: string) => {
+    if (ref.current) {
+      htmlToImage.toPng(ref.current, { backgroundColor: '#f3f4f6' }).then(dataUrl => {
+        const link = document.createElement('a');
+        link.download = filename;
+        link.href = dataUrl;
+        link.click();
+      }).catch(err => {
+        console.error('Snap error:', err);
+        alert('Failed to generate image. Ensure all assets are loaded.');
+      });
+    }
   };
 
   const generateTestSchedule = () => {
-    const baseTeams = tournament.teams.filter(t => t.id !== 'BYE' && t.name.trim() !== '');
-    if (baseTeams.length < 2) return alert("Min 2 teams required to generate schedule!");
-    
+    const teams = tournament.teams.filter(t => t.id !== 'BYE');
+    if (teams.length < 2) return alert("Min 2 teams required!");
     const matches: Match[] = [];
     const series: SeriesGroup[] = [];
-    const teamIds = baseTeams.map(t => t.id);
+    const teamIds = [...teams.map(t => t.id)];
     if (teamIds.length % 2 !== 0) teamIds.push('BYE');
-    
-    const numRounds = teamIds.length - 1;
-    const teamMatchTotals: Record<string, number> = {};
-    teamIds.forEach(id => teamMatchTotals[id] = 0);
+    const roundsCount = teamIds.length - 1;
 
-    const venues = tournament.stadiums.length > 0 ? tournament.stadiums : [{ id: 'V1', name: 'Default Ground' }];
-
-    const rotatedTeamIds = [...teamIds];
-
-    for (let r = 0; r < numRounds; r++) {
-      for (let i = 0; i < rotatedTeamIds.length / 2; i++) {
-        const t1 = rotatedTeamIds[i];
-        const t2 = rotatedTeamIds[rotatedTeamIds.length - 1 - i];
-        
+    for (let r = 0; r < roundsCount; r++) {
+      for (let i = 0; i < teamIds.length / 2; i++) {
+        const t1 = teamIds[i];
+        const t2 = teamIds[teamIds.length - 1 - i];
         if (t1 !== 'BYE' && t2 !== 'BYE') {
-          const sId = `SERIES-R${r + 1}-P${i + 1}`;
+          const sId = `S-R${r+1}-P${i}`;
           const mIds: string[] = [];
-          
-          let chosenLen = seriesRange.min;
-          if (seriesRange.max > seriesRange.min) {
-            chosenLen = Math.floor(Math.random() * (seriesRange.max - seriesRange.min + 1)) + seriesRange.min;
-          }
-
-          teamMatchTotals[t1] += chosenLen;
-          teamMatchTotals[t2] += chosenLen;
-
-          for (let m = 0; m < chosenLen; m++) {
-            const mId = `MATCH-${sId}-G${m + 1}`;
+          const bestLen = Math.floor(Math.random() * (seriesRange.max - seriesRange.min + 1)) + seriesRange.min;
+          for (let m = 0; m < bestLen; m++) {
+            const mId = `M-${sId}-T${m+1}`;
             mIds.push(mId);
             matches.push({
-              id: mId,
-              round: r + 1,
-              seriesId: sId,
-              team1Id: t1,
-              team2Id: t2,
-              venueId: venues[m % venues.length].id,
+              id: mId, round: r + 1, seriesId: sId, team1Id: t1, team2Id: t2,
+              venueId: tournament.stadiums[m % (tournament.stadiums.length || 1)]?.id || 'V1',
               status: 'NOT_STARTED'
             });
           }
-          
-          series.push({
-            id: sId,
-            round: r + 1,
-            team1Id: t1,
-            team2Id: t2,
-            status: 'NOT_STARTED',
-            matchIds: mIds
-          });
+          series.push({ id: sId, round: r + 1, team1Id: t1, team2Id: t2, status: 'NOT_STARTED', matchIds: mIds });
         }
       }
-      rotatedTeamIds.splice(1, 0, rotatedTeamIds.pop()!);
+      teamIds.splice(1, 0, teamIds.pop()!);
     }
-
-    onUpdateTournament?.({ 
-      ...tournament, 
-      matches, 
-      series, 
-      status: 'ONGOING' 
-    });
-    
-    setScheduleLevel('OVERVIEW');
+    onUpdateTournament?.({ ...tournament, matches, series, status: 'ONGOING' });
   };
 
-  const getDetailedSeriesStats = (seriesId: string) => {
-    const series = tournament.series?.find(s => s.id === seriesId);
-    if (!series) return null;
-    const ms = tournament.matches.filter(m => m.seriesId === seriesId);
-    const completed = ms.filter(m => m.status === 'COMPLETED');
-    const team1 = tournament.teams.find(t => t.id === series.team1Id);
-    const team2 = tournament.teams.find(t => t.id === series.team2Id);
-    const t1Wins = completed.filter(m => m.winnerId === series.team1Id).length;
-    const t2Wins = completed.filter(m => m.winnerId === series.team2Id).length;
-    const t1Losses = completed.filter(m => m.winnerId === series.team2Id).length;
-    const draws = completed.filter(m => m.resultType === 'DRAW' || m.resultType === 'TIE' || m.resultType === 'NO_RESULT').length;
-    const t1MatchPts = (t1Wins * tournament.config.pointsForWin) + (t1Losses * tournament.config.pointsForLoss) + (draws * tournament.config.pointsForDraw);
-    const t2MatchPts = (t2Wins * tournament.config.pointsForWin) + (completed.filter(m => m.winnerId === series.team1Id).length * tournament.config.pointsForLoss) + (draws * tournament.config.pointsForDraw);
-    let t1SeriesPts = 0, t2SeriesPts = 0, winnerName = 'PENDING';
-    if (series.status === 'COMPLETED') {
-      if (t1Wins > t2Wins) { winnerName = team1?.name || 'T1'; if (tournament.config.countSeriesBonus) t1SeriesPts = tournament.config.pointsForSeriesWin; }
-      else if (t2Wins > t1Wins) { winnerName = team2?.name || 'T2'; if (tournament.config.countSeriesBonus) t2SeriesPts = tournament.config.pointsForSeriesWin; }
-      else if (completed.length > 0) { winnerName = 'DRAWN'; if (tournament.config.countSeriesBonus) { t1SeriesPts = tournament.config.pointsForSeriesDraw; t2SeriesPts = tournament.config.pointsForSeriesDraw; } }
-    }
-    return { team1, team2, t1Wins, t2Wins, t1Losses, draws, t1MatchPts, t2MatchPts, t1SeriesPts, t2SeriesPts, t1Total: t1MatchPts + t1SeriesPts, t2Total: t2MatchPts + t2SeriesPts, winnerName, totalMatches: ms.length, doneMatches: completed.length };
+  const handleAddPenalty = () => {
+    if (!penaltyForm.teamId || penaltyForm.points <= 0) return alert("Select team and valid points");
+    const newPenalty: PenaltyRecord = {
+      id: Date.now().toString(),
+      teamId: penaltyForm.teamId,
+      points: penaltyForm.points,
+      reason: penaltyForm.reason || "Slow Over Rate / Disciplinary",
+      date: new Date().toLocaleDateString()
+    };
+    onUpdateTournament?.({ ...tournament, penalties: [...tournament.penalties, newPenalty] });
+    setPenaltyForm({ teamId: '', points: 0, reason: '' });
+    setConfirmingAction(null);
   };
 
-  const getTeamPointLog = (teamId: string) => {
-    const logs: { type: string, opponent: string, points: number, date?: string, reason?: string }[] = [];
-    
-    tournament.matches.filter(m => (m.team1Id === teamId || m.team2Id === teamId) && m.status === 'COMPLETED').forEach(m => {
-      const isT1 = m.team1Id === teamId;
-      const opp = tournament.teams.find(t => t.id === (isT1 ? m.team2Id : m.team1Id))?.name || 'Unknown';
-      let pts = 0;
-      if (m.resultType === 'T1_WIN') pts = isT1 ? tournament.config.pointsForWin : tournament.config.pointsForLoss;
-      else if (m.resultType === 'T2_WIN') pts = !isT1 ? tournament.config.pointsForWin : tournament.config.pointsForLoss;
-      else pts = tournament.config.pointsForDraw;
-      
-      logs.push({ type: 'MATCH', opponent: opp, points: pts });
-    });
+  const handleAddMatch = () => {
+    if (!drillDownSeries) return;
+    const series = tournament.series?.find(s => s.id === drillDownSeries);
+    if (!series) return;
+    const newId = `M-ADD-${series.id}-${Date.now()}`;
+    const newMatch: Match = { 
+      id: newId, round: series.round, seriesId: series.id, 
+      team1Id: series.team1Id, team2Id: series.team2Id, 
+      venueId: addMatchVenue, status: 'NOT_STARTED' 
+    };
+    const updatedMs = [...tournament.matches, newMatch];
+    const updatedSs = (tournament.series || []).map(s => s.id === series.id ? { ...s, matchIds: [...s.matchIds, newId] } : s);
+    onUpdateTournament?.({ ...tournament, matches: updatedMs, series: updatedSs });
+    setConfirmingAction(null);
+  };
 
-    if (tournament.config.countSeriesBonus) {
-      tournament.series?.filter(s => (s.team1Id === teamId || s.team2Id === teamId) && s.status === 'COMPLETED').forEach(s => {
-        const stats = getDetailedSeriesStats(s.id)!;
-        const isT1 = s.team1Id === teamId;
-        const opp = (isT1 ? stats.team2?.name : stats.team1?.name) || 'Unknown';
-        const t1Wins = stats.t1Wins;
-        const t2Wins = stats.t2Wins;
-        let bonus = 0;
-        if (isT1) {
-          if (t1Wins > t2Wins) bonus = tournament.config.pointsForSeriesWin;
-          else if (t2Wins === t1Wins) bonus = tournament.config.pointsForSeriesDraw;
-        } else {
-          if (t2Wins > t1Wins) bonus = tournament.config.pointsForSeriesWin;
-          else if (t2Wins === t1Wins) bonus = tournament.config.pointsForSeriesDraw;
-        }
-        if (bonus > 0) logs.push({ type: 'SERIES BONUS', opponent: opp, points: bonus });
-      });
-    }
-
-    tournament.penalties.filter(p => p.teamId === teamId).forEach(p => {
-      logs.push({ type: 'PENALTY', opponent: 'SYSTEM', points: -p.points, date: p.date, reason: p.reason });
-    });
-
-    return logs;
+  const toggleAllColumns = () => {
+    const anyHidden = Object.values(visibleColumns).some(v => v === false);
+    const newState = Object.keys(visibleColumns).reduce((acc, key) => ({ ...acc, [key]: anyHidden }), {});
+    setVisibleColumns(newState as any);
   };
 
   return (
     <div className="space-y-8 pb-32">
+      {/* Workspace Sub-Header */}
       <BrutalistCard variant="white" className="p-0 overflow-hidden border-4 border-black no-print">
         <div className="bg-black text-white p-6 flex flex-col md:flex-row items-center justify-between gap-6">
           <div className="flex items-center gap-6">
-            <div className="w-16 h-16 bg-white brutalist-border p-2 transform rotate-3">
-              <img src={tournament.header.siteLogoUrl} className="max-h-full mx-auto" alt="Logo" crossOrigin="anonymous" />
+            <div className="w-16 h-16 bg-white brutalist-border p-2 transform rotate-3 flex items-center justify-center">
+               <span className="text-black font-black text-4xl">W</span>
             </div>
             <div>
               <h1 className="text-4xl font-black uppercase tracking-tighter leading-none">{tournament.name}</h1>
-              <p className="mono text-[8px] tracking-widest text-yellow-400 font-bold uppercase mt-1">AUTHORITY CONSOLE ACTIVE</p>
+              <p className="mono text-[8px] tracking-widest text-yellow-400 font-bold uppercase mt-1">WTC CONTROL PANEL V2.6</p>
             </div>
           </div>
-          <BrutalistButton variant="danger" onClick={onExit} className="px-8">EXIT WORKSPACE</BrutalistButton>
+          <BrutalistButton variant="danger" onClick={onExit} className="px-8">EXIT</BrutalistButton>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-6 border-t-4 border-black bg-white">
+        
+        <div className="grid grid-cols-3 md:grid-cols-6 border-t-4 border-black bg-white">
           {['DASHBOARD', 'INFO', 'SCHEDULE', 'RESULTS', 'POINTS', 'SETTINGS'].map((tab) => (
-            <button key={tab} onClick={() => { setActiveTab(tab as WorkspaceTab); setScheduleLevel('OVERVIEW'); setSelectedTeamId(null); }} 
-              className={`p-4 font-black uppercase text-xs border-r-4 border-black last:border-r-0 transition-all ${activeTab === tab ? 'bg-yellow-400 text-black translate-x-0.5 translate-y-0.5 shadow-none' : 'bg-white text-black hover:bg-gray-100'}`}
+            <button key={tab} onClick={() => { setActiveTab(tab as WorkspaceTab); }} 
+              className={`p-4 font-black uppercase text-[10px] border-r-4 border-black last:border-r-0 transition-all ${activeTab === tab ? 'bg-yellow-400 text-black shadow-none' : 'bg-white text-black hover:bg-gray-100'}`}
             >
               {tab}
             </button>
@@ -427,348 +336,300 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
       </BrutalistCard>
 
       <div className="animate-in fade-in duration-500">
-        {activeTab === 'POINTS' && (
-           <div className="space-y-8 animate-in fade-in">
-              <div className="flex flex-col md:flex-row justify-between items-end gap-4 no-print">
-                 <div className="bg-black text-white p-6 brutalist-border shadow-[8px_8px_0px_#facc15] flex-1">
-                    <h2 className="text-5xl font-black uppercase italic tracking-tighter leading-none">Official Standings</h2>
-                    <p className="mono text-[10px] text-yellow-400 mt-2 font-black uppercase">Test Match Championship Board</p>
-                 </div>
-                 <div className="flex gap-2">
-                    <BrutalistButton variant="primary" onClick={showFullTable}>Show Full Point Table</BrutalistButton>
-                    <BrutalistButton variant="magenta" onClick={() => handleDownloadImage(pointsTableRef, `${tournament.name}_Standings`)}>Download Table</BrutalistButton>
-                 </div>
-              </div>
-
-              <div className="bg-white brutalist-border shadow-[15px_15px_0px_black] overflow-x-auto">
-                <div ref={pointsTableRef} className="bg-white inline-block min-w-full">
-                  <table className="w-full text-left border-collapse min-w-[1200px]" style={{ tableLayout: 'auto' }}>
-                    <thead className="bg-gray-100 font-black uppercase text-[10px] border-b-4 border-black sticky top-0 z-20">
-                      <tr>
-                        {columnVisibility.standing && <th className="p-4 border-r-2 border-black w-16 text-center">STND</th>}
-                        {columnVisibility.team && <th className="p-4 border-r-2 border-black whitespace-nowrap w-px">TEAM IDENTITY</th>}
-                        {columnVisibility.sPlayed && <th className="p-4 border-r-2 border-black text-center w-16">S.PLD</th>}
-                        {columnVisibility.sDone && <th className="p-4 border-r-2 border-black text-center w-16">S.DONE</th>}
-                        {columnVisibility.sLeft && <th className="p-4 border-r-2 border-black text-center w-16">S.LFT</th>}
-                        {columnVisibility.mPlayed && <th className="p-4 border-r-2 border-black text-center w-16">M.PLD</th>}
-                        {columnVisibility.mWon && <th className="p-4 border-r-2 border-black text-center w-16">WON</th>}
-                        {columnVisibility.mDrawn && <th className="p-4 border-r-2 border-black text-center w-16">DRW</th>}
-                        {columnVisibility.mLost && <th className="p-4 border-r-2 border-black text-center w-16">LST</th>}
-                        {columnVisibility.totalPts && <th className="p-4 border-r-2 border-black text-center w-24">TOTAL Pt</th>}
-                        {columnVisibility.maxPts && <th className="p-4 border-r-2 border-black text-center w-24">MAX Pt</th>}
-                        {columnVisibility.pct && <th className="p-4 border-r-2 border-black text-center bg-yellow-400 text-black w-24">PCT %</th>}
-                        {columnVisibility.penalty && <th className="p-4 border-r-2 border-black text-center w-16 text-rose-600">PEN</th>}
-                        {columnVisibility.finalPts && <th className="p-4 border-r-2 border-black text-center w-24 bg-black text-white">FINAL Pt</th>}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y-2 divide-black">
-                      {standings.map((t, idx) => (
-                        <tr key={t.id} className={`hover:bg-yellow-50 font-black uppercase text-sm transition-all group ${idx < 2 ? 'bg-emerald-50' : 'bg-white'}`}>
-                          {columnVisibility.standing && <td className="p-4 border-r-2 border-black mono text-center bg-gray-50 text-2xl group-hover:bg-yellow-100 transition-colors italic">#{idx + 1}</td>}
-                          {columnVisibility.team && (
-                            <td className="p-4 border-r-2 border-black whitespace-nowrap w-px min-w-max cursor-pointer" onClick={() => setSelectedTeamId(t.id)}>
-                              <div className="flex items-center gap-4 w-fit hover:translate-x-1 transition-transform pr-12">
-                                <div className="w-10 h-10 brutalist-border bg-white p-1 transform -rotate-3 flex-shrink-0"><img src={t.logoUrl || ''} className="max-h-full mx-auto" alt="Logo" crossOrigin="anonymous" /></div>
-                                <span className="text-lg tracking-tighter whitespace-nowrap underline decoration-dotted decoration-2 underline-offset-4">{t.name}</span>
-                              </div>
-                            </td>
-                          )}
-                          {columnVisibility.sPlayed && <td className="p-4 border-r-2 border-black mono text-center opacity-60">{t.sPlayed}</td>}
-                          {columnVisibility.sDone && <td className="p-4 border-r-2 border-black mono text-center text-emerald-600">{t.sDone}</td>}
-                          {columnVisibility.sLeft && <td className="p-4 border-r-2 border-black mono text-center text-gray-400">{t.sPlayed - t.sDone}</td>}
-                          {columnVisibility.mPlayed && <td className="p-4 border-r-2 border-black mono text-center bg-gray-50/50">{t.matchesPlayed}</td>}
-                          {columnVisibility.mWon && <td className="p-4 border-r-2 border-black mono text-center text-emerald-600">{t.matchesWon}</td>}
-                          {columnVisibility.mDrawn && <td className="p-4 border-r-2 border-black mono text-center text-sky-600">{t.matchesDrawn}</td>}
-                          {columnVisibility.mLost && <td className="p-4 border-r-2 border-black mono text-center text-rose-600">{t.matchesLost}</td>}
-                          {columnVisibility.totalPts && (
-                            <td className={`p-4 border-r-2 border-black mono text-center font-black text-xl ${t.penaltyPoints > 0 ? 'text-rose-600 bg-rose-50' : 'bg-gray-50'}`}>
-                              {t.basePoints + t.bonusPoints}
-                            </td>
-                          )}
-                          {columnVisibility.maxPts && <td className="p-4 border-r-2 border-black mono text-center opacity-40">{t.playedFor}</td>}
-                          {columnVisibility.pct && <td className="p-4 border-r-2 border-black mono text-center font-black bg-yellow-400/20 text-3xl italic tracking-tighter">{t.pct.toFixed(2)}%</td>}
-                          {columnVisibility.penalty && <td className="p-4 border-r-2 border-black mono text-center text-rose-500">-{t.penaltyPoints}</td>}
-                          {columnVisibility.finalPts && <td className="p-4 border-r-2 border-black mono text-center font-black text-2xl bg-black text-white">{t.totalPoints}</td>}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+        
+        {/* DASHBOARD TAB */}
+        {activeTab === 'DASHBOARD' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div className="lg:col-span-2 space-y-8">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="bg-black text-white p-8 brutalist-border brutalist-shadow">
+                  <h4 className="mono text-[10px] uppercase text-yellow-400 mb-2">Completion Status</h4>
+                  <div className="text-6xl font-black tracking-tighter">{metrics.percent}%</div>
+                  <div className="w-full h-4 bg-gray-800 mt-4 brutalist-border relative overflow-hidden">
+                    <div className="absolute inset-0 bg-yellow-400 transition-all duration-1000" style={{ width: `${metrics.percent}%` }}></div>
+                  </div>
+                  <p className="mono text-[9px] mt-4 uppercase font-bold">{metrics.completedMatches} OF {metrics.totalMatches} MATCHES COMPLETED</p>
+                </div>
+                <div className="bg-white p-8 brutalist-border brutalist-shadow">
+                  <h4 className="mono text-[10px] uppercase text-gray-500 mb-2">Current Rank #1</h4>
+                  <div className="text-4xl font-black tracking-tighter uppercase italic">{metrics.leader?.name || "N/A"}</div>
+                  <div className="mt-4 flex items-center gap-2">
+                    <span className="bg-yellow-400 px-2 py-1 brutalist-border font-black text-xl">{metrics.leader?.pct.toFixed(2)}%</span>
+                    <span className="font-bold mono text-xs uppercase">POINTS PCT</span>
+                  </div>
                 </div>
               </div>
 
-              {/* Penalty Management Section */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8 no-print">
-                <BrutalistCard title="⚠️ DEDUCT PENALTY POINTS" variant="pink">
+              {metrics.totalMatches === 0 ? (
+                <BrutalistCard title="SYSTEM ACTION REQUIRED" variant="magenta" className="p-10 text-center">
                   <div className="space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-[10px] font-black uppercase mb-1">Select Team</label>
-                        <select 
-                          className="w-full brutalist-border p-2 font-black uppercase bg-white text-black"
-                          value={penaltyForm.teamId}
-                          onChange={e => setPenaltyForm({...penaltyForm, teamId: e.target.value})}
-                        >
-                          <option value="">-- CHOOSE TEAM --</option>
-                          {tournament.teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-black uppercase mb-1">Points to Deduct</label>
-                        <input 
-                          type="number"
-                          className="w-full brutalist-border p-2 font-black uppercase bg-white text-black"
-                          value={penaltyForm.points}
-                          onChange={e => setPenaltyForm({...penaltyForm, points: Number(e.target.value)})}
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-black uppercase mb-1">Reason for Penalty</label>
-                      <input 
-                        className="w-full brutalist-border p-2 font-black uppercase bg-white text-black"
-                        placeholder="E.G. SLOW OVER RATE"
-                        value={penaltyForm.reason}
-                        onChange={e => setPenaltyForm({...penaltyForm, reason: e.target.value})}
-                      />
-                    </div>
-                    <BrutalistButton variant="danger" className="w-full" onClick={handleAddPenalty}>APPLY PENALTY</BrutalistButton>
+                    <p className="text-2xl font-black uppercase">Schedule not yet initialized.</p>
+                    <BrutalistButton variant="primary" onClick={() => setActiveTab('SCHEDULE')} className="text-xl px-12 py-4">GO TO SCHEDULE PAGE</BrutalistButton>
                   </div>
                 </BrutalistCard>
-
-                <BrutalistCard title="📜 PENALTY LOG HISTORY" variant="white">
-                  <div className="space-y-2 max-h-[250px] overflow-y-auto pr-2">
-                    {tournament.penalties.length > 0 ? (
-                      tournament.penalties.slice().reverse().map(p => {
-                        const team = tournament.teams.find(t => t.id === p.teamId);
-                        return (
-                          <div key={p.id} className="p-3 brutalist-border bg-white flex justify-between items-center group">
-                            <div>
-                              <p className="font-black uppercase text-xs">{team?.name}</p>
-                              <p className="text-[9px] opacity-60 italic">{p.reason} — {p.date}</p>
-                            </div>
-                            <div className="flex items-center gap-3">
-                              <span className="font-black text-rose-600">-{p.points}</span>
-                              <button onClick={() => handleRemovePenalty(p.id)} className="text-[10px] font-black uppercase opacity-0 group-hover:opacity-100 hover:text-rose-600">REMOVE</button>
-                            </div>
-                          </div>
-                        );
-                      })
-                    ) : (
-                      <div className="p-8 text-center text-gray-300 italic font-black uppercase text-sm">No penalties recorded.</div>
-                    )}
-                  </div>
+              ) : (
+                <BrutalistCard title="RECENT ACTIVITY" variant="white">
+                   <div className="space-y-4">
+                      {tournament.matches.filter(m => m.status === 'COMPLETED').slice(-5).reverse().map(m => (
+                        <div key={m.id} className="flex justify-between items-center p-3 brutalist-border bg-gray-50 font-black uppercase text-xs">
+                          <span>{tournament.teams.find(t => t.id === m.team1Id)?.shortName} v {tournament.teams.find(t => t.id === m.team2Id)?.shortName}</span>
+                          <span className="bg-emerald-400 px-2 py-1 brutalist-border">{m.resultType === 'DRAW' ? 'DRAW' : tournament.teams.find(t => t.id === m.winnerId)?.shortName + ' WON'}</span>
+                        </div>
+                      ))}
+                      {tournament.matches.filter(m => m.status === 'COMPLETED').length === 0 && <p className="text-center font-bold text-gray-400 uppercase italic">No matches played yet.</p>}
+                   </div>
                 </BrutalistCard>
-              </div>
-
-              <BrutalistCard title="⚙️ POINT TABLE DATA DISPLAY SETTINGS (ON/OFF)" variant="white" className="no-print">
-                 <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
-                    {Object.keys(columnVisibility).map(col => {
-                      const labels: Record<string, string> = {
-                        standing: "Rank", team: "Team Identity", sPlayed: "Series Played", sDone: "Series Done", sLeft: "Series Left",
-                        mPlayed: "Matches Played", mWon: "Matches Won", mDrawn: "Matches Drawn", mLost: "Matches Lost",
-                        totalPts: "Total Point", maxPts: "Max Possible", pct: "PCT %", penalty: "Penalty Pts", finalPts: "Final Points"
-                      };
-                      return (
-                        <button 
-                          key={col} 
-                          onClick={() => toggleColumn(col)}
-                          className={`p-3 brutalist-border font-black uppercase text-[9px] flex items-center justify-between gap-2 transition-all ${columnVisibility[col] ? 'bg-black text-white' : 'bg-white text-black opacity-40'}`}
-                        >
-                          {labels[col]}
-                          <span>{columnVisibility[col] ? 'ON' : 'OFF'}</span>
-                        </button>
-                      );
-                    })}
-                 </div>
-              </BrutalistCard>
-           </div>
+              )}
+            </div>
+            
+            <div className="space-y-8">
+               <BrutalistCard title="QUICK STANDINGS" variant="yellow" compact>
+                  <div className="space-y-2">
+                    {standings.slice(0, 5).map((t, idx) => (
+                      <div key={t.id} className="flex items-center justify-between border-b-2 border-black/10 pb-2">
+                        <div className="flex items-center gap-3">
+                          <span className="font-black text-xl">#{idx+1}</span>
+                          <span className="font-bold text-xs uppercase">{t.shortName}</span>
+                        </div>
+                        <span className="font-black mono">{t.pct.toFixed(1)}%</span>
+                      </div>
+                    ))}
+                    <BrutalistButton variant="secondary" className="w-full mt-4" onClick={() => setActiveTab('POINTS')}>VIEW FULL TABLE</BrutalistButton>
+                  </div>
+               </BrutalistCard>
+            </div>
+          </div>
         )}
 
+        {/* INFO TAB */}
+        {activeTab === 'INFO' && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+            <BrutalistCard title="WTC RULEBOOK" variant="white">
+              <div className="prose prose-sm max-w-none">
+                <h3 className="font-black uppercase text-xl border-b-4 border-black mb-4 pb-2">Scoring System</h3>
+                <table className="w-full mono text-xs uppercase font-bold">
+                  <tbody>
+                    <tr className="border-b border-black/10"><td className="py-2">MATCH WIN</td><td className="text-right text-emerald-600">{tournament.config.pointsForWin} PTS</td></tr>
+                    <tr className="border-b border-black/10"><td className="py-2">MATCH DRAW / TIE</td><td className="text-right text-yellow-600">{tournament.config.pointsForDraw} PTS</td></tr>
+                    <tr className="border-b border-black/10"><td className="py-2">MATCH LOSS</td><td className="text-right text-rose-600">{tournament.config.pointsForLoss} PTS</td></tr>
+                    {tournament.config.countSeriesBonus && (
+                        <>
+                            <tr className="border-b border-black/10"><td className="py-2">SERIES WIN</td><td className="text-right text-emerald-600">+{tournament.config.pointsForSeriesWin} PTS</td></tr>
+                            <tr className="border-b border-black/10"><td className="py-2">SERIES DRAW</td><td className="text-right text-yellow-600">+{tournament.config.pointsForSeriesDraw} PTS</td></tr>
+                            <tr className="border-b border-black/10"><td className="py-2">SERIES LOSS</td><td className="text-right text-rose-600">+{tournament.config.pointsForSeriesLoss} PTS</td></tr>
+                        </>
+                    )}
+                  </tbody>
+                </table>
+                <div className="mt-8 bg-black text-white p-4 brutalist-border">
+                  <p className="text-[10px] leading-relaxed">The Standings are determined by Points Percentage (PCT). In the event of a tie on PCT, total net points and matches won will act as tie-breakers.</p>
+                </div>
+              </div>
+            </BrutalistCard>
+            <BrutalistCard title="VENUE DIRECTORY" variant="blue">
+               <div className="grid grid-cols-1 gap-2">
+                 {tournament.stadiums.map((s, idx) => (
+                   <div key={s.id} className="p-3 brutalist-border bg-white flex justify-between items-center group">
+                     <span className="font-black uppercase text-sm">{idx+1}. {s.name}</span>
+                     <span className="mono text-[10px] bg-gray-100 px-2 py-1">VENUE ID: {s.id.slice(-4)}</span>
+                   </div>
+                 ))}
+                 {tournament.stadiums.length === 0 && <p className="text-center font-bold text-gray-400 py-10 uppercase italic">No stadiums listed.</p>}
+               </div>
+            </BrutalistCard>
+          </div>
+        )}
+
+        {/* SCHEDULE TAB */}
         {activeTab === 'SCHEDULE' && (
           <div className="space-y-6">
-            <div className="bg-black p-4 brutalist-border text-white flex flex-wrap justify-between items-center gap-4 no-print shadow-[6px_6px_0px_black]">
-                <div className="flex gap-4 font-black text-[12px] uppercase overflow-x-auto">
-                   <button onClick={() => setScheduleLevel('OVERVIEW')} className={scheduleLevel === 'OVERVIEW' ? 'text-yellow-400 underline underline-offset-4 decoration-2' : 'hover:text-yellow-200'}>1. OVERVIEW</button>
-                   <button onClick={() => setScheduleLevel('DISTRIBUTION')} className={scheduleLevel === 'DISTRIBUTION' ? 'text-yellow-400 underline underline-offset-4 decoration-2' : 'hover:text-yellow-200'}>2. MATRIX & DIST</button>
-                   <button onClick={() => setScheduleLevel('ROUNDS')} className={scheduleLevel === 'ROUNDS' ? 'text-yellow-400 underline underline-offset-4 decoration-2' : 'hover:text-yellow-200'}>3. ROUNDS</button>
-                   <button onClick={() => setScheduleLevel('FULL_SCHEDULE')} className={scheduleLevel === 'FULL_SCHEDULE' ? 'text-yellow-400 underline underline-offset-4 decoration-2' : 'hover:text-yellow-200'}>4. FULL SCHEDULE</button>
+            <div className="bg-black p-4 brutalist-border text-white flex justify-between items-center no-print shadow-[6px_6px_0px_black]">
+                <div className="flex gap-6 font-black text-xs uppercase">
+                   <button onClick={() => { setScheduleLevel('ROUNDS'); setDrillDownRound(null); }} className={scheduleLevel === 'ROUNDS' ? 'text-yellow-400' : 'hover:text-gray-300'}>Rounds View</button>
+                   <button onClick={() => { setScheduleLevel('FULL_SCHEDULE'); setDrillDownRound(null); }} className={scheduleLevel === 'FULL_SCHEDULE' ? 'text-yellow-400' : 'hover:text-gray-300'}>Master Fixtures</button>
                 </div>
-                <div className="flex gap-3">
-                  {(!tournament.matches || tournament.matches.length === 0) ? 
-                    <BrutalistButton variant="success" compact onClick={generateTestSchedule}>Generate Schedule</BrutalistButton> : 
-                    <BrutalistButton variant="danger" compact onClick={() => setConfirmingAction({ type: 'REGENERATE_SCHEDULE' })}>Regenerate Schedule</BrutalistButton>
-                  }
-                </div>
+                {!tournament.matches?.length && <BrutalistButton variant="success" compact onClick={generateTestSchedule}>Generate WTC Schedule</BrutalistButton>}
             </div>
 
-            {scheduleLevel === 'OVERVIEW' && (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-in fade-in">
-                {(!tournament.matches || tournament.matches.length === 0) ? (
-                   <div className="col-span-full p-20 text-center bg-white brutalist-border shadow-[10px_10px_0px_black]">
-                      <h3 className="text-3xl font-black uppercase italic text-gray-400 mb-4">No Schedule Found</h3>
-                      <BrutalistButton variant="success" onClick={generateTestSchedule}>Generate Initial Tournament Schedule</BrutalistButton>
-                   </div>
-                ) : (
-                  <>
-                    <BrutalistCard title="ROUND SYNOPSIS" variant="white">
-                       <div className="space-y-3">
-                          {roundsData.map(r => (
-                            <div key={r.num} className="flex justify-between items-center p-3 brutalist-border bg-gray-50">
-                               <span className="font-black uppercase text-sm">Round {r.num}</span>
-                               <span className={`px-2 py-0.5 text-[9px] font-black brutalist-border ${r.status === 'COMPLETED' ? 'bg-emerald-400' : 'bg-yellow-400'}`}>{r.status}</span>
-                            </div>
-                          ))}
-                       </div>
+            {scheduleLevel === 'ROUNDS' && !drillDownRound && (
+              <div ref={roundsRef} className="space-y-4">
+                <div className="flex justify-between items-center bg-white p-4 brutalist-border no-print">
+                   <h2 className="text-2xl font-black uppercase italic">Tournament Rounds Overview</h2>
+                   <BrutalistButton variant="accent" compact onClick={() => handleSnap(roundsRef, `WTC_Rounds_${tournament.name}.png`)}>Snap Rounds PNG</BrutalistButton>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 animate-in fade-in">
+                  {roundsData.map(r => (
+                    <BrutalistCard key={r.num} title={`ROUND ${r.num}`} variant={r.status === 'COMPLETED' ? 'green' : 'white'} compact>
+                      <div className="space-y-4">
+                        <div className="flex justify-between items-center text-[10px] font-black uppercase">
+                          <span>Series: {r.series.length}</span>
+                          <span>Matches: {r.matchCount}</span>
+                        </div>
+                        <div className={`text-center font-black py-1 brutalist-border text-[9px] uppercase ${r.status === 'COMPLETED' ? 'bg-emerald-400' : 'bg-yellow-400'}`}>{r.status.replace('_', ' ')}</div>
+                        <BrutalistButton variant="primary" className="w-full" onClick={() => { setDrillDownRound(r.num); setScheduleLevel('SERIES'); }}>Open Series</BrutalistButton>
+                      </div>
                     </BrutalistCard>
-                    <BrutalistCard title="UPCOMING SERIES" variant="blue">
-                       <div className="space-y-3">
-                          {tournament.series?.filter(s => s.status !== 'COMPLETED').slice(0, 5).map(s => (
-                            <div key={s.id} className="p-3 brutalist-border bg-white flex justify-between items-center">
-                               <div className="font-black text-[10px] uppercase">
-                                 {tournament.teams.find(t => t.id === s.team1Id)?.name} vs {tournament.teams.find(t => t.id === s.team2Id)?.name}
-                               </div>
-                               <BrutalistButton variant="secondary" compact onClick={() => { setDrillDownSeries(s.id); setScheduleLevel('MATCHES'); }}>View</BrutalistButton>
-                            </div>
-                          ))}
-                       </div>
-                    </BrutalistCard>
-                  </>
-                )}
+                  ))}
+                  {roundsData.length === 0 && <div className="col-span-full py-20 text-center font-black text-3xl text-gray-300 uppercase italic">No Rounds Generated</div>}
+                </div>
               </div>
             )}
 
-            {scheduleLevel === 'DISTRIBUTION' && (
-               <div className="space-y-8 animate-in fade-in">
-                  <BrutalistCard title="MATCH DISTRIBUTION MATRIX (SERIES MAP)" variant="white" className="overflow-auto">
-                    <div className="bg-white p-4 overflow-x-auto">
-                      <div ref={distributionTableRef} className="bg-white inline-block">
-                        <table className="border-collapse">
-                          <thead>
-                              <tr>
-                                <th className="p-2 border-2 border-black bg-gray-100 min-w-[100px]"></th>
-                                {tournament.teams.filter(t => t.id !== 'BYE').map(t => (
-                                    <th key={t.id} className="p-2 border-2 border-black bg-black text-white text-[9px] uppercase font-black vertical-text h-40">
-                                      <div className="flex flex-col items-center gap-2">
-                                        <img src={t.logoUrl} className="w-6 h-6 object-contain bg-white p-0.5 border border-white" alt="" crossOrigin="anonymous" />
-                                        {t.name}
-                                      </div>
-                                    </th>
-                                ))}
-                              </tr>
-                          </thead>
-                          <tbody>
-                              {tournament.teams.filter(t => t.id !== 'BYE').map(t1 => (
-                                <tr key={t1.id}>
-                                    <td className="p-2 border-2 border-black bg-black text-white text-[9px] uppercase font-black whitespace-nowrap">
-                                      <div className="flex items-center gap-2">
-                                        <img src={t1.logoUrl} className="w-6 h-6 object-contain bg-white p-0.5 border border-white" alt="" crossOrigin="anonymous" />
-                                        {t1.name}
-                                      </div>
-                                    </td>
-                                    {tournament.teams.filter(t => t.id !== 'BYE').map(t2 => {
-                                      const s = tournament.series?.find(ser => (ser.team1Id === t1.id && ser.team2Id === t2.id) || (ser.team1Id === t2.id && ser.team2Id === t1.id));
-                                      const mCount = s ? s.matchIds.length : 0;
-                                      const isDone = s?.status === 'COMPLETED';
-                                      return (
-                                          <td key={t2.id} className={`p-2 border-2 border-black text-center font-black text-xs min-w-[50px] ${t1.id === t2.id ? 'bg-gray-200' : (s ? (isDone ? 'bg-emerald-100' : 'bg-yellow-50') : 'bg-rose-50 opacity-20')}`}>
-                                            {t1.id === t2.id ? '-' : (s ? `${mCount}G` : 'X')}
-                                          </td>
-                                      );
-                                    })}
-                                </tr>
-                              ))}
-                          </tbody>
-                        </table>
-                        <div className="mt-4 flex gap-4 text-[10px] font-black uppercase">
-                          <div className="flex items-center gap-2"><div className="w-3 h-3 bg-emerald-100 border border-black"></div> SERIES CONCLUDED</div>
-                          <div className="flex items-center gap-2"><div className="w-3 h-3 bg-yellow-50 border border-black"></div> SERIES PENDING</div>
-                          <div className="flex items-center gap-2"><div className="w-3 h-3 bg-rose-50 border border-black opacity-40"></div> NO MATCHUP</div>
-                        </div>
-                      </div>
+            {scheduleLevel === 'FULL_SCHEDULE' && (
+              <div className="space-y-6 animate-in fade-in">
+                {/* Filter Bar */}
+                <BrutalistCard title="FIXTURES FILTER ENGINE" variant="yellow" compact className="no-print">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-black uppercase">Filter by Team</label>
+                      <select className="w-full brutalist-border p-2 text-xs font-black uppercase bg-white outline-none" value={fixtureTeam} onChange={e => setFixtureTeam(e.target.value)}>
+                        <option value="">ALL TEAMS</option>
+                        {tournament.teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                      </select>
                     </div>
-                    <div className="mt-4 no-print px-4 pb-4">
-                      <BrutalistButton variant="magenta" onClick={() => handleDownloadImage(distributionTableRef, `${tournament.name}_Matrix`)}>Download Matrix Image</BrutalistButton>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-black uppercase">Filter by Round</label>
+                      <select className="w-full brutalist-border p-2 text-xs font-black uppercase bg-white outline-none" value={fixtureRound} onChange={e => setFixtureRound(e.target.value)}>
+                        <option value="">ALL ROUNDS</option>
+                        {roundsData.map(r => <option key={r.num} value={r.num}>ROUND {r.num}</option>)}
+                      </select>
                     </div>
-                  </BrutalistCard>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-black uppercase">Filter by Status</label>
+                      <select className="w-full brutalist-border p-2 text-xs font-black uppercase bg-white outline-none" value={fixtureStatus} onChange={e => setFixtureStatus(e.target.value)}>
+                        <option value="">ALL STATUSES</option>
+                        <option value="NOT_STARTED">NOT STARTED</option>
+                        <option value="IN_PROGRESS">IN PROGRESS</option>
+                        <option value="COMPLETED">COMPLETED</option>
+                      </select>
+                    </div>
+                    <div className="flex items-end gap-2">
+                       <BrutalistButton variant="danger" className="flex-1" onClick={() => {setFixtureTeam(''); setFixtureRound(''); setFixtureStatus('');}} compact>RESET</BrutalistButton>
+                       <BrutalistButton variant="accent" className="flex-1" onClick={() => handleSnap(fixturesRef, `WTC_MasterFixtures_${tournament.name}.png`)} compact>SNAP PNG</BrutalistButton>
+                    </div>
+                  </div>
+                </BrutalistCard>
 
-                  <BrutalistCard title="MATCH DISTRIBUTION PER TEAM" variant="cyan">
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                      {tournament.teams.filter(t => t.id !== 'BYE').map(t => {
-                        const mCount = tournament.matches.filter(m => m.team1Id === t.id || m.team2Id === t.id).length;
-                        const sCount = tournament.series?.filter(s => s.team1Id === t.id || s.team2Id === t.id).length || 0;
-                        return (
-                          <div key={t.id} className="p-4 brutalist-border bg-white shadow-[4px_4px_0px_black] flex items-center gap-4">
-                            <img src={t.logoUrl} className="w-10 h-10 object-contain p-1 border-2 border-black" alt="" crossOrigin="anonymous" />
-                            <div>
-                              <p className="font-black uppercase text-xs leading-none mb-1">{t.name}</p>
-                              <p className="mono text-[10px] font-bold text-gray-400 uppercase">SERIES: {sCount} | GAMES: {mCount}</p>
-                            </div>
+                {/* Master Fixtures List */}
+                <div ref={fixturesRef} className="bg-white brutalist-border shadow-[12px_12px_0px_black] overflow-hidden p-6">
+                  <div className="border-b-4 border-black pb-4 mb-6 flex justify-between items-center">
+                     <div>
+                        <h2 className="text-4xl font-black uppercase italic tracking-tighter">Master Fixtures List</h2>
+                        <p className="mono text-[10px] text-gray-500 font-bold uppercase">Series Level Schedule Overview</p>
+                     </div>
+                     <div className="bg-black text-white px-4 py-2 brutalist-border font-black text-xl">
+                        {masterFixturesData.length} SERIES
+                     </div>
+                  </div>
+                  <div className="grid grid-cols-1 gap-4">
+                    {masterFixturesData.map(s => {
+                      const t1 = tournament.teams.find(t => t.id === s.team1Id);
+                      const t2 = tournament.teams.find(t => t.id === s.team2Id);
+                      const perf = getSeriesPerformance(s.id);
+                      return (
+                        <div key={s.id} className="brutalist-border p-4 bg-gray-50 flex flex-col md:flex-row justify-between items-center gap-4 group hover:bg-white transition-colors">
+                          <div className="flex items-center gap-4 flex-1">
+                             <div className="w-12 h-12 bg-black text-white flex items-center justify-center brutalist-border font-black text-xs transform -rotate-2">
+                                R{s.round}
+                             </div>
+                             <div className="flex flex-col">
+                                <span className="text-lg font-black uppercase leading-tight">{t1?.name} <span className="text-gray-400 italic">v</span> {t2?.name}</span>
+                                <span className="text-[10px] mono text-gray-500">{s.matchIds.length} MATCH SERIES | ID: {s.id}</span>
+                             </div>
                           </div>
-                        )
-                      })}
-                    </div>
-                  </BrutalistCard>
-               </div>
-            )}
+                          
+                          <div className="flex items-center gap-6 bg-white brutalist-border p-2 px-4">
+                             <div className="flex flex-col items-center">
+                                <span className="text-[8px] font-black text-gray-400">STATUS</span>
+                                <span className={`text-[10px] font-black uppercase ${s.status === 'COMPLETED' ? 'text-emerald-600' : 'text-yellow-600'}`}>{s.status.replace('_', ' ')}</span>
+                             </div>
+                             {perf && (
+                               <div className="flex flex-col items-center border-l-2 border-black/10 pl-4">
+                                  <span className="text-[8px] font-black text-gray-400">SCORELINE</span>
+                                  <span className="text-sm font-black mono">{perf.t1.w} - {perf.t2.w}</span>
+                               </div>
+                             )}
+                          </div>
 
-            {scheduleLevel === 'ROUNDS' && (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 animate-in fade-in">
-                {roundsData.map(r => (
-                  <BrutalistCard key={r.num} title={`ROUND ${r.num}`} variant={r.status === 'COMPLETED' ? 'green' : 'white'} compact>
-                    <div className="space-y-4">
-                      <div className="flex justify-between items-center text-[10px] font-black uppercase">
-                        <span>Series: {r.series.length}</span>
-                        <span>Matches: {r.matchCount}</span>
-                      </div>
-                      <BrutalistButton variant="primary" className="w-full" onClick={() => { setDrillDownRound(r.num); setScheduleLevel('SERIES'); }}>Open Round {r.num}</BrutalistButton>
-                    </div>
-                  </BrutalistCard>
-                ))}
+                          <BrutalistButton variant="magenta" compact className="no-print" onClick={() => { setDrillDownSeries(s.id); setScheduleLevel('MATCHES'); }}>Open Matches</BrutalistButton>
+                        </div>
+                      );
+                    })}
+                    {masterFixturesData.length === 0 && (
+                      <div className="py-20 text-center font-black text-gray-300 uppercase italic">No Series Match These Filters</div>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
 
             {scheduleLevel === 'SERIES' && (
                <div className="space-y-6 animate-in fade-in">
-                  <div className="flex justify-between items-center no-print bg-black p-3 brutalist-border border-white">
-                    <BrutalistButton variant="secondary" compact onClick={() => setScheduleLevel('ROUNDS')}>← Back to Rounds</BrutalistButton>
-                    <div className="flex gap-2">
-                       <span className="text-white font-black uppercase text-xs self-center">ROUND {drillDownRound} TOOLS:</span>
-                       <BrutalistButton variant="magenta" compact onClick={() => handleDownloadImage(roundCaptureRef, `${tournament.name}_Round_${drillDownRound}`)}>Download Screenshot</BrutalistButton>
-                    </div>
+                  <div className="flex justify-between items-center no-print">
+                    <BrutalistButton variant="secondary" compact onClick={() => { setDrillDownRound(null); setScheduleLevel('ROUNDS'); }}>← Back to Rounds</BrutalistButton>
+                    <h3 className="bg-black text-white px-4 py-2 brutalist-border font-black uppercase italic">Round {drillDownRound} Pairings</h3>
                   </div>
-                  <div ref={roundCaptureRef} className="bg-white brutalist-border shadow-[12px_12px_0px_black] overflow-hidden p-4">
-                     <h3 className="text-3xl font-black uppercase italic tracking-tighter mb-4 border-b-4 border-black pb-2">ROUND {drillDownRound} - MATCHUP LOG</h3>
+                  <div className="bg-white brutalist-border shadow-[12px_12px_0px_black] overflow-hidden">
                      <table className="w-full text-left">
                         <thead className="bg-black text-white font-black uppercase text-[10px] border-b-4 border-black">
                            <tr>
-                              <th className="p-4 border-r border-white/20">Series Pairing</th>
-                              <th className="p-4 border-r border-white/20">Record (W-L-D)</th>
-                              <th className="p-4 border-r border-white/20 text-center">Winner</th>
-                              <th className="p-4 border-r border-white/20 text-center">Points Breakdown</th>
-                              <th className="p-4 text-center no-print">Action</th>
+                              <th className="p-4 border-r border-white/20">Pairing & Score</th>
+                              <th className="p-4 border-r border-white/20">Performance Summary</th>
+                              <th className="p-4 border-r border-white/20 text-center">Points Earned</th>
+                              <th className="p-4 text-center">Action</th>
                            </tr>
                         </thead>
                         <tbody className="divide-y-2 divide-black">
                            {tournament.series!.filter(s => s.round === drillDownRound).map(s => {
-                              const stats = getDetailedSeriesStats(s.id)!;
+                              const perf = getSeriesPerformance(s.id);
+                              const t1 = tournament.teams.find(t => t.id === s.team1Id);
+                              const t2 = tournament.teams.find(t => t.id === s.team2Id);
                               return (
-                                 <tr key={s.id} className="hover:bg-blue-50 font-black uppercase text-xs transition-colors bg-white">
-                                    <td className="p-4 border-r-2 border-black bg-gray-50">{stats.team1?.name} vs {stats.team2?.name}</td>
-                                    <td className="p-4 border-r-2 border-black">
-                                       <div className="grid grid-cols-2 gap-2">
-                                          <div>{stats.team1?.name.substring(0,3)}: {stats.t1Wins}-{stats.t1Losses}-{stats.draws}</div>
-                                          <div>{stats.team2?.name.substring(0,3)}: {stats.t2Wins}-{stats.t1Wins}-{stats.draws}</div>
-                                       </div>
-                                    </td>
-                                    <td className={`p-4 border-r-2 border-black text-center font-black ${stats.winnerName === 'DRAWN' ? 'text-sky-600' : 'text-emerald-600'}`}>{stats.winnerName}</td>
-                                    <td className="p-4 border-r-2 border-black text-center mono">
-                                       <div className="flex flex-col text-[9px] gap-1">
-                                          <div className="flex justify-between"><span>{stats.team1?.name.substring(0,3)}:</span><span>{stats.t1Total} <span className="text-gray-400">({stats.t1MatchPts}+{stats.t1SeriesPts})</span></span></div>
-                                          <div className="flex justify-between"><span>{stats.team2?.name.substring(0,3)}:</span><span>{stats.t2Total} <span className="text-gray-400">({stats.t2MatchPts}+{stats.t2SeriesPts})</span></span></div>
-                                       </div>
-                                    </td>
-                                    <td className="p-4 text-center no-print"><BrutalistButton variant="magenta" compact onClick={() => { setDrillDownSeries(s.id); setScheduleLevel('MATCHES'); }}>Matches</BrutalistButton></td>
-                                 </tr>
+                                <tr key={s.id} className="hover:bg-blue-50 font-black uppercase text-xs transition-colors group bg-white">
+                                   <td className="p-4 border-r-2 border-black bg-gray-50">
+                                      <div className="flex flex-col gap-1">
+                                         <div className="flex justify-between">
+                                            <span>{t1?.name}</span>
+                                            <span className="bg-black text-white px-1.5">{perf?.t1.w || 0}</span>
+                                         </div>
+                                         <div className="flex justify-between">
+                                            <span>{t2?.name}</span>
+                                            <span className="bg-black text-white px-1.5">{perf?.t2.w || 0}</span>
+                                         </div>
+                                      </div>
+                                   </td>
+                                   <td className="p-4 border-r-2 border-black">
+                                      {perf ? (
+                                        <div className="grid grid-cols-2 gap-4 mono text-[10px]">
+                                           <div className="space-y-1">
+                                              <p className="border-b border-black/10 font-bold">{t1?.shortName}</p>
+                                              <p>W:{perf.t1.w} L:{perf.t1.l} D:{perf.t1.d}</p>
+                                              <p className={perf.t1.sWin ? 'text-emerald-600' : (perf.t1.sDraw ? 'text-yellow-600' : 'text-gray-400')}>
+                                                SERIES: {perf.t1.sWin ? 'WON' : (perf.t1.sDraw ? 'DRAW' : 'LOST')}
+                                              </p>
+                                           </div>
+                                           <div className="space-y-1">
+                                              <p className="border-b border-black/10 font-bold">{t2?.shortName}</p>
+                                              <p>W:{perf.t2.w} L:{perf.t2.l} D:{perf.t2.d}</p>
+                                              <p className={perf.t2.sWin ? 'text-emerald-600' : (perf.t2.sDraw ? 'text-yellow-600' : 'text-gray-400')}>
+                                                SERIES: {perf.t2.sWin ? 'WON' : (perf.t2.sDraw ? 'DRAW' : 'LOST')}
+                                              </p>
+                                           </div>
+                                        </div>
+                                      ) : 'NOT STARTED'}
+                                   </td>
+                                   <td className="p-4 border-r-2 border-black text-center">
+                                      {perf ? (
+                                        <div className="flex flex-col gap-1 mono">
+                                           <div className="bg-blue-50 p-1 brutalist-border">{t1?.shortName}: {perf.t1.pts + perf.t1.sPts}</div>
+                                           <div className="bg-blue-50 p-1 brutalist-border">{t2?.shortName}: {perf.t2.pts + perf.t2.sPts}</div>
+                                        </div>
+                                      ) : '--'}
+                                   </td>
+                                   <td className="p-4 text-center">
+                                      <BrutalistButton variant="magenta" compact onClick={() => { setDrillDownSeries(s.id); setScheduleLevel('MATCHES'); }}>Open Matches</BrutalistButton>
+                                   </td>
+                                </tr>
                               );
                            })}
                         </tbody>
@@ -779,31 +640,63 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
 
             {scheduleLevel === 'MATCHES' && (
               <div className="space-y-6 animate-in fade-in">
-                <div className="flex justify-between items-center no-print">
+                <div className="flex justify-between items-center no-print bg-black p-2 brutalist-border">
                    <BrutalistButton variant="secondary" compact onClick={() => setScheduleLevel('SERIES')}>← Back to Series</BrutalistButton>
+                   <BrutalistButton variant="success" compact onClick={() => setConfirmingAction({ type: 'ADD_MATCH' })}>+ Add Match</BrutalistButton>
                 </div>
                 <div className="bg-white brutalist-border shadow-[12px_12px_0px_black] overflow-hidden">
                   <table className="w-full text-left">
                     <thead className="bg-gray-100 font-black uppercase text-[10px] border-b-4 border-black">
-                      <tr><th className="p-5 border-r-2 border-black w-24">Match #</th><th className="p-5 border-r-2 border-black">Winner / Outcome</th><th className="p-5 border-r-2 border-black text-center">Pts Awarded</th><th className="p-5 border-r-2 border-black text-center">Status</th><th className="p-5 text-center">Action</th></tr>
+                      <tr>
+                        <th className="p-5 border-r-2 border-black w-24">Match #</th>
+                        <th className="p-5 border-r-2 border-black">Outcome & Winner</th>
+                        <th className="p-5 border-r-2 border-black text-center">Points Awarded</th>
+                        <th className="p-5 border-r-2 border-black text-center">Status</th>
+                        <th className="p-5 text-center">Action</th>
+                      </tr>
                     </thead>
                     <tbody className="divide-y-2 divide-black">
                       {tournament.matches.filter(m => m.seriesId === drillDownSeries).map((m, idx) => {
                           const winner = tournament.teams.find(t => t.id === m.winnerId);
-                          let pts = { t1: 0, t2: 0 };
-                          if (m.status === 'COMPLETED') {
-                             if (m.resultType === 'T1_WIN') { pts.t1 = tournament.config.pointsForWin; pts.t2 = tournament.config.pointsForLoss; }
-                             else if (m.resultType === 'T2_WIN') { pts.t1 = tournament.config.pointsForLoss; pts.t2 = tournament.config.pointsForWin; }
-                             else { pts.t1 = tournament.config.pointsForDraw; pts.t2 = tournament.config.pointsForDraw; }
-                          }
+                          const pts = getMatchPoints(m);
+                          const t1 = tournament.teams.find(t => t.id === m.team1Id);
+                          const t2 = tournament.teams.find(t => t.id === m.team2Id);
                           return (
-                            <tr key={m.id} className="hover:bg-emerald-50 font-black uppercase text-xs transition-colors bg-white">
-                              <td className="p-5 border-r-2 border-black mono italic bg-gray-50">GAME_{idx+1}</td>
-                              <td className="p-5 border-r-2 border-black">{m.status === 'COMPLETED' ? (m.resultType === 'DRAW' ? 'DRAWN' : winner?.name) : '--'}</td>
-                              <td className="p-5 border-r-2 border-black text-center mono text-[10px]">{m.status === 'COMPLETED' ? `T1: ${pts.t1} | T2: ${pts.t2}` : '--'}</td>
-                              <td className="p-5 border-r-2 border-black text-center"><span className={`px-2 py-1 brutalist-border text-[9px] ${m.status==='COMPLETED'?'bg-emerald-400':'bg-white'}`}>{m.status}</span></td>
+                            <tr key={m.id} className="hover:bg-emerald-50 font-black uppercase text-xs transition-colors group bg-white">
+                              <td className="p-5 border-r-2 border-black mono italic bg-gray-50"># {idx+1}</td>
+                              <td className="p-5 border-r-2 border-black">
+                                 {m.status === 'COMPLETED' ? (
+                                    <div className="flex items-center justify-between">
+                                      <span className="font-black text-sm">{m.resultType === 'DRAW' ? 'MATCH DRAWN' : (winner?.name + ' WON')}</span>
+                                      <span className="text-[10px] text-gray-400 italic">ID: {m.id.split('-').pop()}</span>
+                                    </div>
+                                 ) : '--'}
+                              </td>
+                              <td className="p-5 border-r-2 border-black text-center mono">
+                                 {m.status === 'COMPLETED' ? (
+                                   <div className="flex justify-center gap-3">
+                                      <div className="flex flex-col">
+                                         <span className="text-[9px] text-gray-500">{t1?.shortName}</span>
+                                         <span className="bg-yellow-400 px-1 brutalist-border">{pts.t1 > 0 ? `+${pts.t1}` : pts.t1}</span>
+                                      </div>
+                                      <div className="flex flex-col">
+                                         <span className="text-[9px] text-gray-500">{t2?.shortName}</span>
+                                         <span className="bg-yellow-400 px-1 brutalist-border">{pts.t2 > 0 ? `+${pts.t2}` : pts.t2}</span>
+                                      </div>
+                                   </div>
+                                 ) : '--'}
+                              </td>
+                              <td className="p-5 border-r-2 border-black text-center">
+                                 <span className={`px-2 py-1 brutalist-border text-[9px] ${m.status==='COMPLETED'?'bg-emerald-400':'bg-white'}`}>
+                                    {m.status}
+                                 </span>
+                              </td>
                               <td className="p-5 text-center flex items-center justify-center gap-2">
-                                {m.status === 'COMPLETED' ? <BrutalistButton variant="danger" compact onClick={() => setConfirmingAction({ type: 'ADMIN_UNLOCK', matchId: m.id })}>Unlock</BrutalistButton> : <BrutalistButton variant="success" compact onClick={() => { setConfirmingAction({ type: 'SAVE_RESULT', matchId: m.id }); setResultForm({ winnerId: '', resultType: 'T1_WIN', notes: '' }); }}>Commit</BrutalistButton>}
+                                {m.status === 'COMPLETED' ? (
+                                  <BrutalistButton variant="danger" compact onClick={() => setConfirmingAction({ type: 'ADMIN_UNLOCK', matchId: m.id })}>Unlock</BrutalistButton>
+                                ) : (
+                                  <BrutalistButton variant="success" compact onClick={() => { setConfirmingAction({ type: 'SAVE_RESULT', matchId: m.id }); setResultForm({ winnerId: '', resultType: 'T1_WIN', notes: '' }); }}>Commit</BrutalistButton>
+                                )}
                               </td>
                             </tr>
                           );
@@ -813,260 +706,232 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
                 </div>
               </div>
             )}
-
-            {scheduleLevel === 'FULL_SCHEDULE' && (
-               <div className="space-y-6 animate-in fade-in">
-                  <div className="flex justify-between items-center no-print">
-                    <div className="flex gap-2">
-                      <BrutalistButton variant="magenta" onClick={() => handleDownloadImage(fullScheduleRef, `${tournament.name}_Full_Series_Schedule`)}>Download Full Series Schedule</BrutalistButton>
-                      <BrutalistButton variant="secondary" onClick={handlePrint}>Print as PDF</BrutalistButton>
-                    </div>
-                  </div>
-                  <div ref={fullScheduleRef} className="bg-white brutalist-border shadow-[12px_12px_0px_black] overflow-hidden p-6 print:shadow-none print:border-none">
-                     <div className="mb-6 border-b-4 border-black pb-4">
-                        <h2 className="text-4xl font-black uppercase italic tracking-tighter leading-none">{tournament.name} - OFFICIAL SERIES SCHEDULE</h2>
-                        <p className="mono text-[10px] text-gray-500 mt-1 uppercase font-black">Round-by-Round Series Summary (No Matches)</p>
-                     </div>
-                     
-                     <div className="space-y-10">
-                        {roundsData.map(r => (
-                          <div key={r.num} className="space-y-4">
-                            <h3 className="text-2xl font-black bg-black text-white px-4 py-1 inline-block uppercase italic tracking-tighter">ROUND {r.num}</h3>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                              {r.series.map(s => {
-                                const t1 = tournament.teams.find(t => t.id === s.team1Id);
-                                const t2 = tournament.teams.find(t => t.id === s.team2Id);
-                                return (
-                                  <div key={s.id} className="p-4 brutalist-border bg-gray-50 flex justify-between items-center shadow-[4px_4px_0px_black]">
-                                    <div className="flex items-center gap-4">
-                                      <div className="flex flex-col items-center">
-                                        <img src={t1?.logoUrl} className="w-8 h-8 object-contain mb-1" alt="" crossOrigin="anonymous" />
-                                        <span className="font-black text-[10px] uppercase text-center w-20 truncate">{t1?.name}</span>
-                                      </div>
-                                      <span className="font-black italic text-gray-300">VS</span>
-                                      <div className="flex flex-col items-center">
-                                        <img src={t2?.logoUrl} className="w-8 h-8 object-contain mb-1" alt="" crossOrigin="anonymous" />
-                                        <span className="font-black text-[10px] uppercase text-center w-20 truncate">{t2?.name}</span>
-                                      </div>
-                                    </div>
-                                    <div className="text-right">
-                                      <div className="mono text-[8px] font-black uppercase text-gray-400">Series Length</div>
-                                      <div className="font-black text-xl italic tracking-tighter">{s.matchIds.length} GAMES</div>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        ))}
-                     </div>
-
-                     <div className="mt-12 pt-4 border-t-2 border-black border-dashed mono text-[8px] flex justify-between uppercase opacity-50">
-                        <span>GENERATED BY CAD MANAGER v1.2.1</span>
-                        <span>{new Date().toLocaleString()}</span>
-                     </div>
-                  </div>
-               </div>
-            )}
           </div>
         )}
 
-        {selectedTeamId && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300 no-print">
-            <BrutalistCard title={`TEAM PROFILE: ${tournament.teams.find(t => t.id === selectedTeamId)?.name}`} className="max-w-2xl w-full bg-white max-h-[90vh] overflow-hidden flex flex-col">
-               <div className="overflow-y-auto p-2">
-                 <div className="flex items-center gap-6 mb-8 border-b-4 border-black pb-6">
-                    <img src={tournament.teams.find(t => t.id === selectedTeamId)?.logoUrl} className="w-24 h-24 brutalist-border bg-white p-2" alt="" crossOrigin="anonymous" />
-                    <div>
-                       <h2 className="text-4xl font-black uppercase italic tracking-tighter leading-none">{tournament.teams.find(t => t.id === selectedTeamId)?.name}</h2>
-                       <p className="mono text-xs font-bold text-gray-400 mt-2 uppercase tracking-widest">Team Performance Archive & Point Log</p>
-                    </div>
-                 </div>
-
-                 <h4 className="font-black text-xs uppercase bg-black text-white px-2 py-1 mb-4 inline-block tracking-tighter italic">Official Point Log History</h4>
-                 <div className="space-y-2 mb-8 pr-2">
-                    {getTeamPointLog(selectedTeamId).length > 0 ? getTeamPointLog(selectedTeamId).map((log, i) => (
-                      <div key={i} className={`p-3 brutalist-border flex justify-between items-center ${log.points > 0 ? 'bg-emerald-50 border-emerald-900' : (log.points < 0 ? 'bg-rose-50 border-rose-900' : 'bg-gray-50 border-gray-900')}`}>
-                        <div>
-                           <div className="font-black uppercase text-[10px] tracking-tight">{log.type}: <span className="opacity-50 italic">{log.opponent}</span></div>
-                           {log.reason && <p className="text-[9px] mono uppercase font-bold text-rose-600 mt-1">{log.reason}</p>}
-                        </div>
-                        <div className={`text-xl font-black mono ${log.points > 0 ? 'text-emerald-600' : (log.points < 0 ? 'text-rose-600' : 'text-gray-400')}`}>
-                          {log.points > 0 ? `+${log.points}` : log.points} Pt
-                        </div>
-                      </div>
-                    )) : (
-                      <div className="p-12 text-center text-gray-300 italic font-black uppercase text-sm">Awaiting match results to generate log...</div>
-                    )}
-                 </div>
-
-                 <div className="flex gap-2 sticky bottom-0 bg-white py-4 border-t-2 border-black border-dashed">
-                    <BrutalistButton variant="primary" className="flex-1" onClick={() => setSelectedTeamId(null)}>CLOSE PROFILE</BrutalistButton>
-                 </div>
-               </div>
-            </BrutalistCard>
-          </div>
-        )}
-
-        {activeTab === 'DASHBOARD' && (
-           <div className="space-y-12">
-              <BrutalistCard title="TOURNAMENT TIMELINE: ROUND PROGRESS" variant="white">
-                 <div className="flex gap-2 h-16">
-                    {roundsData.length > 0 ? roundsData.map((r) => (
-                      <div key={r.num} className={`flex-1 brutalist-border flex items-center justify-center mono font-black text-sm relative group cursor-help transition-all transform hover:-translate-y-1 ${r.status === 'COMPLETED' ? 'bg-emerald-400' : r.status === 'IN_PROGRESS' ? 'bg-yellow-400' : 'bg-gray-100 text-gray-400'}`}>
-                        R{r.num}
-                        <div className="absolute bottom-full mb-3 hidden group-hover:block z-50 bg-black text-white p-4 text-[10px] whitespace-nowrap brutalist-border shadow-[4px_4px_0px_white] animate-in slide-in-from-bottom-2">
-                           <p className="font-black uppercase mb-1">ROUND {r.num} STATS</p>
-                           <p className="opacity-70">SERIES: {r.series.length} | MATCHES: {r.matchCount}</p>
-                           <p className="font-black text-yellow-400 mt-1 uppercase">STATUS: {r.status.replace('_', ' ')}</p>
-                        </div>
-                      </div>
-                    )) : <div className="flex-1 brutalist-border bg-gray-50 flex items-center justify-center mono italic text-gray-300">AWAITING SCHEDULE ENGINE...</div>}
-                 </div>
-              </BrutalistCard>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                <BrutalistCard title="MATCH ENGINE HEALTH" variant="cyan">
-                   <div className="space-y-4">
-                      <div className="p-4 bg-white brutalist-border flex justify-between items-center shadow-[4px_4px_0px_black]"><span className="font-black uppercase text-xs text-gray-400">Total Matches</span><span className="text-3xl font-black">{tournament.matches.length}</span></div>
-                      <div className="space-y-2">
-                         {[{ label: 'Completed', val: tournament.matches.filter(m => m.status === 'COMPLETED').length, color: 'text-emerald-600' }, { label: 'In Progress', val: tournament.matches.filter(m => m.status === 'IN_PROGRESS').length, color: 'text-yellow-600' }, { label: 'Remaining', val: tournament.matches.filter(m => m.status === 'NOT_STARTED').length, color: 'text-gray-400' }].map(s => (
-                           <div key={s.label} className="flex justify-between items-center px-2 py-1 border-b-2 border-black border-dotted"><span className="font-bold text-[10px] uppercase">{s.label} Matches</span><span className={`mono font-black ${s.color}`}>{s.val}</span></div>
-                         ))}
-                      </div>
-                   </div>
-                </BrutalistCard>
-                <BrutalistCard title="SERIES STATUS LOG" variant="magenta">
-                   <div className="grid grid-cols-2 gap-4 h-full">
-                      {[{ label: 'TOTAL', val: tournament.series?.length || 0, bg: 'bg-white' }, { label: 'CONCLUDED', val: tournament.series?.filter(s => s.status === 'COMPLETED').length || 0, bg: 'bg-emerald-50' }, { label: 'ONGOING', val: tournament.series?.filter(s => s.status === 'IN_PROGRESS').length || 0, bg: 'bg-yellow-50' }, { label: 'PENDING', val: tournament.series?.filter(s => s.status === 'NOT_STARTED').length || 0, bg: 'bg-white' }].map(item => (
-                        <div key={item.label} className={`brutalist-border ${item.bg} p-4 flex flex-col items-center justify-center shadow-[4px_4px_0px_black] hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all`}>
-                           <p className="text-3xl font-black">{item.val}</p>
-                           <p className="mono text-[8px] uppercase font-bold text-gray-400">{item.label}</p>
-                        </div>
-                      ))}
-                   </div>
-                </BrutalistCard>
-                <BrutalistCard title="QUALIFICATION TRACKER" variant="yellow">
-                   <div className="space-y-4">
-                      <p className="mono text-[10px] uppercase font-black border-b border-black pb-1">Top 2 Qualifiers (Live PCT):</p>
-                      {standings.slice(0, 2).map((t, i) => (
-                        <div key={t.id} className="p-4 brutalist-border bg-white flex flex-col shadow-[4px_4px_0px_black] relative overflow-hidden group hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all">
-                          <div className="flex justify-between items-center z-10"><span className="font-black text-lg italic uppercase tracking-tighter">#{i+1} {t.name}</span><span className="bg-black text-white px-2 py-1 mono text-[10px]">{t.pct.toFixed(2)}%</span></div>
-                          <div className="mt-2 z-10"><span className="px-2 py-0.5 bg-emerald-400 text-black brutalist-border text-[8px] font-black uppercase">Qualified for Test Championship Final</span></div>
-                          <div className="absolute right-[-10%] bottom-[-20%] text-6xl opacity-5 font-black italic group-hover:opacity-10 transition-opacity">#{i+1}</div>
-                        </div>
-                      ))}
-                   </div>
-                </BrutalistCard>
-              </div>
-           </div>
-        )}
-
-        {activeTab === 'INFO' && (
-          <div className="space-y-12">
-            <BrutalistCard title="SECTION 1: TOURNAMENT INFORMATION (IDENTITY)" variant="white">
-               <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
-                  <div className="md:col-span-3 space-y-8">
-                    <div className="group relative">
-                      <label className="mono text-[10px] font-black uppercase text-gray-400">Tournament Name Field</label>
-                      <div className="flex items-center gap-4">
-                        {isEditingIdentity ? <input value={tempTournamentName} onChange={e => setTempTournamentName(e.target.value)} className="text-4xl font-black uppercase bg-white brutalist-border p-4 w-full outline-none focus:bg-yellow-50 shadow-[8px_8px_0px_black]" /> : <div className="flex items-center gap-4 group/name p-2 transition-all brutalist-border border-transparent hover:border-black hover:bg-yellow-50 hover:shadow-[4px_4px_0px_black]"><h3 className="text-5xl font-black uppercase italic tracking-tighter cursor-default">{tournament.name}</h3><button onClick={() => setIsEditingIdentity(true)} className="p-2 opacity-0 group-hover/name:opacity-100 transition-opacity">📝</button></div>}
-                      </div>
-                      {isEditingIdentity && (
-                        <div className="mt-4 p-6 bg-rose-50 brutalist-border border-rose-600 animate-in slide-in-from-top-4">
-                           <div className="flex items-center gap-2 text-rose-600 font-black uppercase text-[10px] mb-4"><span>⚠️ SECURITY OVERRIDE: TYPE EXACT NAME TO COMMIT IDENTITY CHANGE</span></div>
-                           <div className="flex gap-4"><input placeholder="VERIFY CURRENT NAME" value={securityInput} onChange={e => setSecurityInput(e.target.value)} className="flex-1 brutalist-border p-3 font-black uppercase mono text-sm outline-none" /><BrutalistButton variant="success" onClick={handleSaveIdentity}>SAVE NAME</BrutalistButton><BrutalistButton variant="secondary" onClick={() => { setIsEditingIdentity(false); setTempTournamentName(tournament.name); setSecurityInput(''); }}>CANCEL</BrutalistButton></div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex flex-col items-center gap-4">
-                     <div className="w-full aspect-square brutalist-border bg-white flex items-center justify-center p-4 shadow-[8px_8px_0px_black] group relative overflow-hidden transition-all hover:-translate-x-1 hover:-translate-y-1 hover:shadow-[12px_12px_0px_black]">
-                        {tournament.header.tournamentLogoUrl ? <img src={tournament.header.tournamentLogoUrl} className="max-h-full object-contain" alt="Tournament Logo" crossOrigin="anonymous" /> : <span className="font-black text-gray-200 text-6xl">?</span>}
-                     </div>
-                  </div>
-               </div>
-            </BrutalistCard>
-          </div>
-        )}
-
+        {/* RESULTS TAB */}
         {activeTab === 'RESULTS' && (
-           <div className="space-y-8 animate-in fade-in">
-              <div className="bg-black p-8 brutalist-border text-white shadow-[10px_10px_0px_#f472b6]">
-                 <h2 className="text-5xl font-black uppercase italic tracking-tighter leading-none">Results Archive</h2>
-                 <p className="mono text-[10px] text-pink-400 mt-2 font-black uppercase">Official Point Allocation Logs & History</p>
+          <div className="space-y-6">
+            <BrutalistCard title="MASTER RESULTS LOG" variant="white">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left font-black uppercase text-xs">
+                  <thead className="bg-black text-white">
+                    <tr>
+                      <th className="p-3 border-r border-white/20">Round</th>
+                      <th className="p-3 border-r border-white/20">Matchup</th>
+                      <th className="p-3 border-r border-white/20">Winner</th>
+                      <th className="p-3 border-r border-white/20">Status</th>
+                      <th className="p-3">Venue</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y-2 divide-black">
+                    {tournament.matches.filter(m => m.status === 'COMPLETED').map(m => (
+                      <tr key={m.id} className="bg-white hover:bg-emerald-50 transition-colors">
+                        <td className="p-3 border-r-2 border-black text-center mono bg-gray-50">{m.round}</td>
+                        <td className="p-3 border-r-2 border-black italic">
+                          {tournament.teams.find(t => t.id === m.team1Id)?.name} v {tournament.teams.find(t => t.id === m.team2Id)?.name}
+                        </td>
+                        <td className="p-3 border-r-2 border-black font-black text-emerald-700">
+                          {m.resultType === 'DRAW' ? 'DRAW' : tournament.teams.find(t => t.id === m.winnerId)?.name}
+                        </td>
+                        <td className="p-3 border-r-2 border-black text-center">
+                          <span className="bg-black text-white px-2 py-0.5 text-[9px]">COMPLETED</span>
+                        </td>
+                        <td className="p-3 text-[10px] text-gray-500">
+                          {tournament.stadiums.find(s => s.id === m.venueId)?.name || 'NEUTRAL'}
+                        </td>
+                      </tr>
+                    ))}
+                    {tournament.matches.filter(m => m.status === 'COMPLETED').length === 0 && (
+                      <tr><td colSpan={5} className="p-20 text-center font-bold text-gray-300 uppercase italic">No completed matches found in database.</td></tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                 <div className="lg:col-span-2 space-y-6">
-                    <BrutalistCard title="FINALIZED MATCH OUTCOMES" variant="white">
-                       <div className="space-y-4">
-                          {tournament.matches.filter(m => m.status === 'COMPLETED').length > 0 ? (
-                            tournament.matches.filter(m => m.status === 'COMPLETED').slice().reverse().map(m => {
-                               const t1 = tournament.teams.find(t => t.id === m.team1Id);
-                               const t2 = tournament.teams.find(t => t.id === m.team2Id);
-                               const winner = tournament.teams.find(t => t.id === m.winnerId);
-                               return (
-                                  <div key={m.id} className="p-4 brutalist-border bg-white flex justify-between items-center group shadow-[4px_4px_0px_black] hover:translate-x-1 hover:translate-y-1 transition-all">
-                                     <div className="flex items-center gap-4">
-                                        <div className="bg-black text-white px-2 py-1 mono text-[10px]">R{m.round}</div>
-                                        <div className="font-black uppercase text-sm">{t1?.name} <span className="text-gray-400 italic">vs</span> {t2?.name}</div>
-                                     </div>
-                                     <div className="text-right">
-                                        <span className={`px-3 py-1 brutalist-border font-black text-[10px] uppercase ${m.resultType === 'DRAW' ? 'bg-sky-400' : 'bg-emerald-400'}`}>
-                                           {m.resultType === 'DRAW' ? 'DRAWN' : (winner?.name + ' WON')}
-                                        </span>
-                                     </div>
-                                  </div>
-                               );
-                            })
-                          ) : <div className="p-20 text-center text-gray-300 italic uppercase font-black">No results filed yet.</div>}
-                       </div>
-                    </BrutalistCard>
+            </BrutalistCard>
+          </div>
+        )}
+
+        {/* POINTS TAB - ADVANCED POINT TABLE */}
+        {activeTab === 'POINTS' && (
+           <div className="space-y-8">
+              <div className="flex flex-col md:flex-row justify-between items-end gap-4 no-print">
+                 <div className="bg-black text-white p-6 brutalist-border shadow-[8px_8px_0px_#facc15] flex-1 w-full">
+                    <h2 className="text-4xl md:text-5xl font-black uppercase italic leading-none">WTC Point Table</h2>
+                    <p className="text-[10px] mt-2 mono text-yellow-400">QUALIFICATION STANDINGS V2.6</p>
                  </div>
-                 <div className="space-y-6">
-                    <BrutalistCard title="SERIES AUTHORITY LOG" variant="magenta">
-                       <div className="space-y-4">
-                          {tournament.series?.filter(s => s.status === 'COMPLETED').map(s => {
-                             const stats = getDetailedSeriesStats(s.id)!;
-                             return (
-                                <div key={s.id} className="p-4 bg-white brutalist-border shadow-[4px_4px_0px_black] border-fuchsia-600">
-                                   <div className="font-black uppercase text-xs mb-2 italic underline decoration-fuchsia-400 tracking-tighter">{stats.team1?.name} vs {stats.team2?.name}</div>
-                                   <div className="flex justify-between items-center font-black uppercase text-[10px]">
-                                      <span>WINNER: <span className="text-emerald-600">{stats.winnerName}</span></span>
-                                      <span className="mono bg-gray-100 px-1 border border-black">{stats.t1Wins}-{stats.t2Wins}-{stats.draws}</span>
-                                   </div>
+                 <div className="flex gap-2">
+                    <BrutalistButton variant="primary" onClick={toggleAllColumns}>
+                       {Object.values(visibleColumns).every(v => v) ? 'HIDE ALL EXTRA' : 'SHOW FULL TABLE'}
+                    </BrutalistButton>
+                    <BrutalistButton variant="accent" onClick={() => handleSnap(pointsTableRef, `WTC_Table_${tournament.name}.png`)}>SNAP PNG</BrutalistButton>
+                 </div>
+              </div>
+
+              <div ref={pointsTableRef} className="bg-white brutalist-border shadow-[15px_15px_0px_black] overflow-x-auto p-4">
+                <table className="w-full text-left border-collapse">
+                  <thead className="bg-gray-100 font-black uppercase text-[9px] border-b-4 border-black">
+                    <tr>
+                      <th className="p-3 border-r-2 border-black text-center">RANK</th>
+                      <th className="p-3 border-r-2 border-black min-w-[200px]">TEAM</th>
+                      {visibleColumns.seriesPlayed && <th className="p-3 border-r-2 border-black text-center">S.PLY</th>}
+                      {visibleColumns.seriesCompleted && <th className="p-3 border-r-2 border-black text-center">S.COM</th>}
+                      {visibleColumns.seriesLeft && <th className="p-3 border-r-2 border-black text-center">S.LFT</th>}
+                      {visibleColumns.matchesPlayed && <th className="p-3 border-r-2 border-black text-center">MP</th>}
+                      {visibleColumns.matchesWon && <th className="p-3 border-r-2 border-black text-center">W</th>}
+                      {visibleColumns.matchesDrawn && <th className="p-3 border-r-2 border-black text-center">D</th>}
+                      {visibleColumns.matchesLost && <th className="p-3 border-r-2 border-black text-center">L</th>}
+                      {visibleColumns.totalPoints && <th className="p-3 border-r-2 border-black text-center bg-blue-50">T.PTS</th>}
+                      {visibleColumns.maxPoints && <th className="p-3 border-r-2 border-black text-center">MAX</th>}
+                      {visibleColumns.pct && <th className="p-3 border-r-2 border-black text-center bg-yellow-400 text-lg">PCT %</th>}
+                      {visibleColumns.penalties && <th className="p-3 border-r-2 border-black text-center text-rose-600">PEN</th>}
+                      {visibleColumns.finalPoints && <th className="p-3 border-r-2 border-black text-center bg-emerald-50">FINAL</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {standings.map((t, idx) => {
+                      const finalPoints = t.totalPoints - t.penaltyPoints;
+                      const hasPenalty = t.penaltyPoints > 0;
+                      return (
+                        <tr key={t.id} className="font-black uppercase text-xs border-b-2 border-black bg-white hover:bg-yellow-50 transition-colors">
+                          <td className="p-3 border-r-2 border-black mono text-center bg-gray-50 text-xl">#{idx+1}</td>
+                          <td className="p-3 border-r-2 border-black">
+                             <div className="flex items-center gap-3">
+                                {t.logoUrl ? (
+                                  <img src={t.logoUrl} className="w-8 h-8 object-contain brutalist-border p-0.5 bg-white" alt="" />
+                                ) : (
+                                  <div className="w-8 h-8 bg-black flex items-center justify-center text-[10px] text-white font-black">{t.shortName}</div>
+                                )}
+                                <div className="flex flex-col">
+                                   <span className="text-sm leading-none">{t.name}</span>
+                                   <span className="text-[9px] text-gray-400 mono">OWNER: {t.owner || 'N/A'}</span>
                                 </div>
-                             );
-                          })}
-                       </div>
-                    </BrutalistCard>
-                 </div>
+                             </div>
+                          </td>
+                          {visibleColumns.seriesPlayed && <td className="p-3 border-r-2 border-black mono text-center">{t.seriesPlayed}</td>}
+                          {visibleColumns.seriesCompleted && <td className="p-3 border-r-2 border-black mono text-center">{t.seriesCompleted || 0}</td>}
+                          {visibleColumns.seriesLeft && <td className="p-3 border-r-2 border-black mono text-center">{(t as any).seriesTotal - ((t as any).seriesCompleted || 0)}</td>}
+                          {visibleColumns.matchesPlayed && <td className="p-3 border-r-2 border-black mono text-center">{t.matchesPlayed}</td>}
+                          {visibleColumns.matchesWon && <td className="p-3 border-r-2 border-black mono text-center">{t.matchesWon}</td>}
+                          {visibleColumns.matchesDrawn && <td className="p-3 border-r-2 border-black mono text-center">{t.matchesDrawn}</td>}
+                          {visibleColumns.matchesLost && <td className="p-3 border-r-2 border-black mono text-center">{t.matchesLost}</td>}
+                          {visibleColumns.totalPoints && (
+                             <td className={`p-3 border-r-2 border-black mono text-center bg-blue-50/30 text-lg ${hasPenalty ? 'text-rose-600 font-black' : ''}`}>
+                                {t.totalPoints}
+                             </td>
+                          )}
+                          {visibleColumns.maxPoints && <td className="p-3 border-r-2 border-black mono text-center text-gray-400">{(t as any).maxPossiblePoints}</td>}
+                          {visibleColumns.pct && (
+                            <td className="p-3 border-r-2 border-black mono text-center bg-yellow-400/20 text-2xl italic">
+                              {t.pct.toFixed(2)}%
+                            </td>
+                          )}
+                          {visibleColumns.penalties && <td className="p-3 border-r-2 border-black mono text-center text-rose-600">-{t.penaltyPoints}</td>}
+                          {visibleColumns.finalPoints && <td className="p-3 border-r-2 border-black mono text-center bg-emerald-50/50 text-xl">{finalPoints}</td>}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
+
+              {/* Column Control Panel */}
+              <BrutalistCard title="TABLE COLUMN CONFIGURATION" variant="white" compact>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 no-print">
+                  {Object.keys(visibleColumns).map(colKey => (
+                    <div key={colKey} className="flex items-center gap-2 bg-gray-50 p-2 brutalist-border">
+                      <input 
+                        type="checkbox" 
+                        id={`toggle-${colKey}`}
+                        checked={visibleColumns[colKey as keyof typeof visibleColumns]}
+                        onChange={() => setVisibleColumns(prev => ({ ...prev, [colKey]: !prev[colKey as keyof typeof visibleColumns] }))}
+                        className="w-5 h-5 accent-black cursor-pointer"
+                      />
+                      <label htmlFor={`toggle-${colKey}`} className="text-[10px] font-black uppercase cursor-pointer select-none truncate">
+                        {colKey.replace(/([A-Z])/g, ' $1')}
+                      </label>
+                    </div>
+                  ))}
+                </div>
+              </BrutalistCard>
            </div>
         )}
+
+        {/* SETTINGS TAB */}
+        {activeTab === 'SETTINGS' && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <BrutalistCard title="SYSTEM PENALTIES" variant="pink">
+               <div className="space-y-4">
+                 <p className="mono text-[10px] uppercase font-bold text-rose-600">Apply points deduction for over-rate or violations.</p>
+                 <select className="w-full brutalist-border p-3 font-black uppercase bg-white text-black outline-none" value={penaltyForm.teamId} onChange={e => setPenaltyForm({...penaltyForm, teamId: e.target.value})}>
+                   <option value="">SELECT TEAM</option>
+                   {tournament.teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                 </select>
+                 <div className="flex gap-2">
+                   <input type="number" placeholder="PTS" className="w-24 brutalist-border p-3 font-black bg-white" value={penaltyForm.points || ''} onChange={e => setPenaltyForm({...penaltyForm, points: parseInt(e.target.value)})}/>
+                   <input type="text" placeholder="REASON" className="flex-1 brutalist-border p-3 font-black uppercase text-xs" value={penaltyForm.reason} onChange={e => setPenaltyForm({...fixtureStatus, reason: e.target.value} as any)}/>
+                 </div>
+                 <BrutalistButton variant="danger" className="w-full py-4" onClick={handleAddPenalty}>DEDUCT POINTS</BrutalistButton>
+
+                 <div className="mt-6 border-t-2 border-black pt-4 space-y-2">
+                   {tournament.penalties.map(p => (
+                     <div key={p.id} className="bg-white p-2 brutalist-border flex justify-between items-center">
+                       <div className="text-[10px] font-black uppercase">
+                         <span className="text-rose-600">{tournament.teams.find(t => t.id === p.teamId)?.shortName}</span>
+                         <span className="mx-2">- {p.points} PTS</span>
+                         <span className="text-gray-400 italic">({p.reason})</span>
+                       </div>
+                       <button className="text-rose-500 font-black" onClick={() => {
+                          const updated = tournament.penalties.filter(pen => pen.id !== p.id);
+                          onUpdateTournament?.({...tournament, penalties: updated});
+                       }}>×</button>
+                     </div>
+                   ))}
+                   {tournament.penalties.length === 0 && <p className="text-center font-bold text-gray-300 uppercase text-[9px]">No penalties applied.</p>}
+                 </div>
+               </div>
+            </BrutalistCard>
+            
+            <BrutalistCard title="DANGER ZONE" variant="white">
+               <div className="space-y-6">
+                 <div className="p-4 bg-rose-50 brutalist-border">
+                    <h5 className="font-black uppercase text-sm mb-1 text-rose-600 underline">Reset Tournament Results</h5>
+                    <p className="text-[9px] mb-4 mono uppercase font-bold">This will wipe all completed matches while keeping teams and venues.</p>
+                    <BrutalistButton variant="danger" compact onClick={() => {
+                      if(confirm("DANGER: WIPE ALL RESULTS?")) {
+                        const updated = tournament.matches.map(m => ({...m, status: 'NOT_STARTED' as const, winnerId: undefined, resultType: undefined}));
+                        onUpdateTournament?.({...tournament, matches: updated});
+                      }
+                    }}>WIPE ALL RESULTS</BrutalistButton>
+                 </div>
+               </div>
+            </BrutalistCard>
+          </div>
+        )}
+
       </div>
 
+      {/* MODALS */}
       {confirmingAction?.type === 'SAVE_RESULT' && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 p-4 no-print animate-in fade-in duration-200">
-          <BrutalistCard title="COMMIT MATCH RESULT" className="max-w-md w-full bg-white">
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 p-4 no-print animate-in duration-200">
+          <BrutalistCard title="COMMIT WTC RESULT" className="max-w-md w-full bg-white">
             <div className="space-y-6 py-4">
               <div className="grid grid-cols-1 gap-2">
                 {[
                   { id: tournament.matches.find(m => m.id === confirmingAction.matchId)?.team1Id, name: tournament.teams.find(t => t.id === tournament.matches.find(m => m.id === confirmingAction.matchId)?.team1Id)?.name },
                   { id: tournament.matches.find(m => m.id === confirmingAction.matchId)?.team2Id, name: tournament.teams.find(t => t.id === tournament.matches.find(m => m.id === confirmingAction.matchId)?.team2Id)?.name }
                 ].map(team => (
-                  <button 
-                    key={team.id} 
-                    onClick={() => setResultForm({...resultForm, winnerId: team.id!, resultType: team.id === tournament.matches.find(m => m.id === confirmingAction.matchId)?.team1Id ? 'T1_WIN' : 'T2_WIN'})}
-                    className={`p-5 brutalist-border font-black uppercase text-lg transition-all ${resultForm.winnerId === team.id ? 'bg-black text-white translate-x-1 translate-y-1 shadow-none' : 'bg-white text-black hover:bg-gray-100'}`}
+                  <button key={team.id} onClick={() => setResultForm({...resultForm, winnerId: team.id!, resultType: team.id === tournament.matches.find(m => m.id === confirmingAction.matchId)?.team1Id ? 'T1_WIN' : 'T2_WIN'})}
+                    className={`p-5 brutalist-border font-black uppercase transition-all ${resultForm.winnerId === team.id ? 'bg-black text-white' : 'bg-white hover:bg-gray-100'}`}
                   >
                     {team.name} WIN
                   </button>
                 ))}
-                <button onClick={() => setResultForm({...resultForm, winnerId: '', resultType: 'DRAW'})} className={`p-5 brutalist-border font-black uppercase text-lg transition-all ${resultForm.resultType === 'DRAW' ? 'bg-black text-white translate-x-1 translate-y-1 shadow-none' : 'bg-white text-black hover:bg-gray-100'}`}>DRAW 🤝</button>
+                <button onClick={() => setResultForm({...resultForm, winnerId: '', resultType: 'DRAW'})} className={`p-5 brutalist-border font-black uppercase transition-all ${resultForm.resultType === 'DRAW' ? 'bg-black text-white' : 'bg-white hover:bg-gray-100'}`}>DRAW / TIE</button>
               </div>
               <BrutalistButton variant="success" className="w-full py-4 text-xl" onClick={() => {
                    const updatedMatches = tournament.matches.map(m => m.id === confirmingAction.matchId ? { ...m, status: 'COMPLETED' as const, resultType: resultForm.resultType, winnerId: resultForm.winnerId } : m);
-                   const updatedSeries = tournament.series?.map(s => {
+                   const updatedSeries = (tournament.series || []).map(s => {
                     const sMs = updatedMatches.filter(m => m.seriesId === s.id);
                     const statusStr = sMs.every(m => m.status === 'COMPLETED') ? 'COMPLETED' : (sMs.some(m => m.status === 'COMPLETED') ? 'IN_PROGRESS' : 'NOT_STARTED');
                     return { ...s, status: statusStr as SeriesGroup['status'] };
@@ -1074,25 +939,47 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
                   onUpdateTournament?.({ ...tournament, matches: updatedMatches, series: updatedSeries, status: 'ONGOING' });
                   setConfirmingAction(null);
                 }}>COMMIT RESULT</BrutalistButton>
+              <BrutalistButton variant="secondary" className="w-full py-2" onClick={() => setConfirmingAction(null)}>CANCEL</BrutalistButton>
+            </div>
+          </BrutalistCard>
+        </div>
+      )}
+
+      {confirmingAction?.type === 'ADD_MATCH' && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 p-4 animate-in fade-in">
+          <BrutalistCard title="ADD NEW WTC MATCH" className="max-w-md w-full bg-white">
+            <div className="space-y-4 py-4">
+              <label className="block text-[10px] font-black uppercase mb-1">Select Venue</label>
+              <select className="w-full brutalist-border p-3 font-black uppercase bg-white text-black outline-none" value={addMatchVenue} onChange={e => setAddMatchVenue(e.target.value)}>
+                {tournament.stadiums.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+              <div className="flex gap-2">
+                <BrutalistButton variant="success" className="flex-1 py-4" onClick={handleAddMatch}>CONFIRM ADD</BrutalistButton>
+                <BrutalistButton variant="secondary" className="flex-1 py-4" onClick={() => setConfirmingAction(null)}>CANCEL</BrutalistButton>
+              </div>
             </div>
           </BrutalistCard>
         </div>
       )}
 
       {confirmingAction?.type === 'ADMIN_UNLOCK' && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/90 p-4 no-print animate-in fade-in">
-          <BrutalistCard title="🔓 BYPASS LOCK" className="max-w-md w-full bg-white">
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/90 p-4 no-print animate-in">
+          <BrutalistCard title="🔓 UNLOCK WTC RESULT" className="max-w-md w-full bg-white border-rose-600">
             <div className="space-y-4">
-              <p className="font-black uppercase text-xs text-rose-600">Enter tournament name to unlock result for editing.</p>
-              <input placeholder="ENTER NAME" className="w-full brutalist-border p-4 font-black uppercase bg-white text-black outline-none border-rose-600" value={securityInput} onChange={e => setSecurityInput(e.target.value)} />
+              <p className="font-black uppercase text-xs text-rose-600 text-center">Verify tournament name to unlock result.</p>
+              <input placeholder="TOURNAMENT NAME" className="w-full brutalist-border p-4 font-black uppercase bg-white text-black outline-none border-rose-600 text-center text-xl" value={securityInput} onChange={e => setSecurityInput(e.target.value)} />
               <div className="flex gap-2">
                 <BrutalistButton variant="danger" className="flex-1 py-3" onClick={() => {
-                   if (securityInput.trim().toLowerCase() !== tournament.name.trim().toLowerCase()) return alert("Security Mismatch!");
+                   if (securityInput.trim().toLowerCase() !== tournament.name.trim().toLowerCase()) return alert("Verification failed.");
                    const updatedMatches = tournament.matches.map(m => m.id === confirmingAction?.matchId ? { ...m, status: 'NOT_STARTED' as const, resultType: undefined, winnerId: undefined } : m);
-                   const updatedSeries = tournament.series?.map(s => { const sMs = updatedMatches.filter(m => m.seriesId === s.id); const statusStr = sMs.every(m => m.status === 'COMPLETED') ? 'COMPLETED' : (sMs.some(m => m.status === 'COMPLETED') ? 'IN_PROGRESS' : 'NOT_STARTED'); return { ...s, status: statusStr as SeriesGroup['status'] }; });
-                   onUpdateTournament?.({ ...tournament, matches: updatedMatches, series: updatedSeries });
-                   setConfirmingAction(null); setSecurityInput('');
-                }}>UNLOCK RECORD</BrutalistButton>
+                   const updatedSeries = (tournament.series || []).map(s => {
+                    const sMs = updatedMatches.filter(m => m.seriesId === s.id);
+                    const statusStr = sMs.every(m => m.status === 'COMPLETED') ? 'COMPLETED' : (sMs.some(m => m.status === 'COMPLETED') ? 'IN_PROGRESS' : 'NOT_STARTED');
+                    return { ...s, status: statusStr as SeriesGroup['status'] };
+                  });
+                  onUpdateTournament?.({ ...tournament, matches: updatedMatches, series: updatedSeries });
+                  setConfirmingAction(null); setSecurityInput('');
+                }}>UNLOCK</BrutalistButton>
                 <BrutalistButton variant="secondary" className="flex-1 py-3" onClick={() => setConfirmingAction(null)}>CANCEL</BrutalistButton>
               </div>
             </div>
@@ -1101,16 +988,9 @@ const TournamentWorkspace: React.FC<TournamentWorkspaceProps> = ({ tournament, o
       )}
 
       <style>{`
-        @keyframes slideIn { from { transform: translateY(-10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        @keyframes slideIn { from { transform: translateY(-5px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
         .animate-in { animation: slideIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
-        @media print { 
-          .no-print { display: none !important; } 
-          body { background: white !important; } 
-          main { padding: 0 !important; max-width: none !important; }
-          .brutalist-border { border: 1px solid black !important; }
-          .brutalist-shadow { box-shadow: none !important; }
-        }
-        .vertical-text { writing-mode: vertical-rl; transform: rotate(180deg); }
+        @media print { .no-print { display: none !important; } }
       `}</style>
     </div>
   );

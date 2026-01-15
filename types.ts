@@ -1,9 +1,9 @@
-
-export type TournamentType = 'TEST' | 'LIMITED_OVERS';
+export type TournamentType = 'TEST';
 
 export interface Team {
   id: string;
   name: string;
+  shortName: string; // 3-letter abbreviation
   logoUrl?: string;
   owner?: string;
   // Stats
@@ -20,12 +20,6 @@ export interface Team {
   penaltyPoints: number; // Deducted
   totalPoints: number; // Net points
   pct: number; // Points Percentage
-  // Extra (Limited Overs)
-  runsScored: number;
-  oversFaced: number;
-  runsConceded: number;
-  oversBowled: number;
-  nrr?: number; 
 }
 
 export interface Stadium {
@@ -47,14 +41,6 @@ export interface Match {
   winnerId?: string;
   resultType?: MatchResultType;
   notes?: string;
-  t1Runs?: number;
-  t1Wickets?: number;
-  t1Overs?: number; 
-  t2Runs?: number;
-  t2Wickets?: number;
-  t2Overs?: number; 
-  tossWinnerId?: string;
-  isDlsApplied?: boolean;
 }
 
 export interface SeriesGroup {
@@ -86,7 +72,6 @@ export interface PenaltyRecord {
 
 export interface TournamentConfig {
   seriesLength?: string;
-  oversPerMatch?: string;
   scheduleFormat: string;
   playoffSystem: string;
   pointsForWin: number;
@@ -95,6 +80,7 @@ export interface TournamentConfig {
   countSeriesBonus: boolean;
   pointsForSeriesWin: number;
   pointsForSeriesDraw: number;
+  pointsForSeriesLoss: number;
   officials: string[];
 }
 

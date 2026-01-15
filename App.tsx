@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+
+import React, { useState, useEffect, useRef } from 'react';
 import { Tournament, AppView, MainTab, WorkspaceTab } from './types';
 import CreateTournamentForm from './components/CreateTournamentForm';
 import ManageTournamentList from './components/ManageTournamentList';
@@ -10,28 +11,28 @@ const App: React.FC = () => {
   const [activeView, setActiveView] = useState<AppView>('MAIN');
   const [activeMainTab, setActiveMainTab] = useState<MainTab>('CREATE');
   const [selectedTournament, setSelectedTournament] = useState<Tournament | null>(null);
+  const isInitialized = useRef(false);
 
-  // Load from LocalStorage
+  // Load from LocalStorage once on mount
   useEffect(() => {
     const saved = localStorage.getItem('cad_tournaments');
     if (saved) {
       try {
-        setTournaments(JSON.parse(saved));
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          setTournaments(parsed);
+        }
       } catch (e) {
         console.error("Failed to parse tournaments", e);
       }
     }
+    isInitialized.current = true;
   }, []);
 
-  // Save to LocalStorage - Wrapped in try-catch to prevent white screen on quota errors
+  // Save to LocalStorage whenever tournaments change, but only after initial load
   useEffect(() => {
-    try {
-      if (tournaments.length > 0) {
-        localStorage.setItem('cad_tournaments', JSON.stringify(tournaments));
-      }
-    } catch (e) {
-      console.error("LocalStorage Save Failed (likely quota exceeded due to large images):", e);
-      alert("Storage full! Try removing some high-resolution logos or deleting old tournaments.");
+    if (isInitialized.current) {
+      localStorage.setItem('cad_tournaments', JSON.stringify(tournaments));
     }
   }, [tournaments]);
 
@@ -66,14 +67,14 @@ const App: React.FC = () => {
       <header className="bg-white border-b-4 border-black p-4 md:p-8 flex flex-col md:flex-row items-center justify-between gap-4 z-50 sticky top-0 shadow-[0_4px_0px_black]">
         <div className="flex items-center gap-4">
           <div className="w-16 h-16 bg-black flex items-center justify-center brutalist-border transform -rotate-3">
-             <span className="text-white font-black text-4xl">C</span>
+             <span className="text-white font-black text-4xl">W</span>
           </div>
           <div>
             <h1 className="text-3xl md:text-5xl font-black tracking-tighter uppercase leading-none">
               Cricket Association of Discord
             </h1>
             <p className="text-sm md:text-lg font-bold uppercase mono tracking-widest text-gray-600">
-              WTC Manager v1.0
+              WTC MANAGER
             </p>
           </div>
         </div>
@@ -82,10 +83,10 @@ const App: React.FC = () => {
           <div className="flex items-center gap-4 bg-yellow-400 p-2 brutalist-border brutalist-shadow transform rotate-1">
             <div className="text-right">
               <div className="font-black uppercase text-xl leading-none">{selectedTournament.name}</div>
-              <div className="text-xs font-bold uppercase mono">{selectedTournament.type} MODE ACTIVE</div>
+              <div className="text-[10px] font-bold uppercase mono">TEST MODE ACTIVE</div>
             </div>
-            <BrutalistButton variant="secondary" onClick={handleExitWorkspace} className="px-4 py-1 text-xs">
-              EXIT WORKSPACE
+            <BrutalistButton variant="secondary" onClick={handleExitWorkspace} compact>
+              EXIT
             </BrutalistButton>
           </div>
         )}
@@ -136,10 +137,8 @@ const App: React.FC = () => {
       <footer className="mt-auto bg-black text-white p-6 border-t-4 border-black">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4 text-[10px] mono uppercase font-black">
           <div>&copy; {new Date().getFullYear()} CRICKET ASSOCIATION OF DISCORD.</div>
-          <div className="flex gap-6">
-            <a href="#" className="hover:text-yellow-400">Documentation</a>
-            <a href="#" className="hover:text-yellow-400">Support</a>
-            <a href="#" className="hover:text-yellow-400">Github</a>
+          <div className="flex gap-6 italic">
+            <span>WTC SYSTEM V1.5.0</span>
           </div>
         </div>
       </footer>

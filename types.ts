@@ -1,14 +1,5 @@
 export type TournamentType = 'TEST';
 
-export type SchedulingMode = 'AUTO' | 'MANUAL' | 'HYBRID';
-
-export interface ManualSeriesEntry {
-  id: string;
-  team1Id: string;
-  team2Id: string;
-  matchCount: number;
-}
-
 export interface Team {
   id: string;
   name: string;
@@ -91,8 +82,6 @@ export interface TournamentConfig {
   pointsForSeriesDraw: number;
   pointsForSeriesLoss: number;
   officials: string[];
-  schedulingMode: SchedulingMode;
-  manualSeriesDraft: ManualSeriesEntry[];
 }
 
 export interface TournamentHeader {

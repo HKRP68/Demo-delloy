@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { Tournament, AppView, MainTab, WorkspaceTab } from './types';
 import CreateTournamentForm from './components/CreateTournamentForm';
@@ -63,33 +62,40 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-200">
-      {/* Global Header */}
-      <header className="bg-white border-b-4 border-black p-4 md:p-8 flex flex-col md:flex-row items-center justify-between gap-4 z-50 sticky top-0 shadow-[0_4px_0px_black]">
-        <div className="flex items-center gap-4">
-          <div className="w-16 h-16 bg-black flex items-center justify-center brutalist-border transform -rotate-3">
-             <span className="text-white font-black text-4xl">W</span>
-          </div>
-          <div>
-            <h1 className="text-3xl md:text-5xl font-black tracking-tighter uppercase leading-none">
-              Cricket Association of Discord
-            </h1>
-            <p className="text-sm md:text-lg font-bold uppercase mono tracking-widest text-gray-600">
-              WTC MANAGER
-            </p>
-          </div>
+      {/* Global Header - Sticky as per Panel 7 */}
+      <header className="bg-white border-b-4 border-black p-4 md:px-8 md:py-4 flex flex-col md:flex-row items-center justify-between gap-4 z-50 sticky top-0 shadow-[0_4px_0px_black]">
+        {/* Left: Tournament Logo */}
+        <div className="flex items-center gap-4 w-full md:w-1/4">
+          {activeView === 'WORKSPACE' && selectedTournament && selectedTournament.header.tournamentLogoUrl ? (
+             <img src={selectedTournament.header.tournamentLogoUrl} className="h-12 w-12 object-contain brutalist-border p-1 bg-white" alt="Tourney Logo" />
+          ) : (
+             <div className="h-12 w-12 bg-black flex items-center justify-center brutalist-border">
+                <span className="text-white font-black text-2xl">?</span>
+             </div>
+          )}
         </div>
 
-        {activeView === 'WORKSPACE' && selectedTournament && (
-          <div className="flex items-center gap-4 bg-yellow-400 p-2 brutalist-border brutalist-shadow transform rotate-1">
-            <div className="text-right">
-              <div className="font-black uppercase text-xl leading-none">{selectedTournament.name}</div>
-              <div className="text-[10px] font-bold uppercase mono">TEST MODE ACTIVE</div>
-            </div>
-            <BrutalistButton variant="secondary" onClick={handleExitWorkspace} compact>
+        {/* Center: Tournament Name */}
+        <div className="text-center flex-1">
+          <h1 className="text-xl md:text-3xl font-black tracking-tighter uppercase leading-none">
+            {activeView === 'WORKSPACE' && selectedTournament ? selectedTournament.name : 'WTC CHAMPIONSHIP MANAGER'}
+          </h1>
+          <p className="text-[10px] md:text-xs font-bold uppercase mono tracking-widest text-gray-500 mt-1">
+            CRICKET ASSOCIATION OF DISCORD – Cricket Tournament Organiser
+          </p>
+        </div>
+
+        {/* Right: Site Logo */}
+        <div className="flex items-center justify-end gap-4 w-full md:w-1/4">
+          {activeView === 'WORKSPACE' && (
+            <BrutalistButton variant="danger" onClick={handleExitWorkspace} compact className="hidden md:flex">
               EXIT
             </BrutalistButton>
+          )}
+          <div className="w-12 h-12 bg-black flex items-center justify-center brutalist-border transform -rotate-3">
+             <span className="text-white font-black text-2xl">W</span>
           </div>
-        )}
+        </div>
       </header>
 
       {/* Main Content Area */}

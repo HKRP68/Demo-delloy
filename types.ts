@@ -1,3 +1,4 @@
+
 export type TournamentType = 'TEST';
 
 export interface Team {
@@ -5,6 +6,7 @@ export interface Team {
   name: string;
   shortName: string; // 3-letter abbreviation
   logoUrl?: string;
+  color?: string; // Hex color for team branding
   owner?: string;
   // Stats
   seriesPlayed: number;
@@ -50,12 +52,13 @@ export interface SeriesGroup {
   team2Id: string;
   status: 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED';
   matchIds: string[];
+  matchCount: number;
 }
 
 export interface ResultLog {
   id: string;
   targetId: string; // matchId or seriesId
-  type: 'UNLOCK' | 'EDIT' | 'DELETE' | 'PENALTY';
+  type: 'UNLOCK' | 'EDIT' | 'DELETE' | 'PENALTY' | 'BONUS' | 'SETTING_CHANGE' | 'RESULT_ADDED';
   reason: string;
   adminName: string;
   timestamp: string;
@@ -70,8 +73,19 @@ export interface PenaltyRecord {
   addedBy?: string;
 }
 
+export interface ManualBonus {
+  id: string;
+  teamId: string;
+  points: number;
+  reason: string;
+  date: string;
+  addedBy?: string;
+}
+
 export interface TournamentConfig {
   seriesLength?: string;
+  minMatchesPerSeries: number;
+  maxMatchesPerSeries: number;
   scheduleFormat: string;
   playoffSystem: string;
   pointsForWin: number;
@@ -106,12 +120,14 @@ export interface Tournament {
   matches: Match[];
   series?: SeriesGroup[];
   penalties: PenaltyRecord[];
+  manualBonuses?: ManualBonus[];
   logs?: ResultLog[];
   config: TournamentConfig;
   header: TournamentHeader;
   teamsCount: number;
+  description?: string;
 }
 
 export type AppView = 'MAIN' | 'WORKSPACE';
 export type MainTab = 'CREATE' | 'MANAGE';
-export type WorkspaceTab = 'DASHBOARD' | 'INFO' | 'SCHEDULE' | 'RESULTS' | 'POINTS' | 'SETTINGS';
+export type WorkspaceTab = 'OVERVIEW' | 'SCHEDULE' | 'RESULTS' | 'POINTS' | 'SETTINGS';

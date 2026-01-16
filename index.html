@@ -28,22 +28,31 @@
         ::-webkit-scrollbar-thumb { background: #000; }
         
         .tab-transition { transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+
+        @media print {
+            .no-print { display: none !important; }
+            body { background: white !important; background-image: none !important; }
+            .brutalist-card-content { border: none !important; box-shadow: none !important; }
+            .print-break-after { page-break-after: always; }
+        }
     </style>
 <script type="importmap">
 {
   "imports": {
-    "vite": "https://esm.sh/vite@^7.3.1",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react": "https://esm.sh/react@19.0.0",
+    "react-dom": "https://esm.sh/react-dom@19.0.0",
+    "react-dom/client": "https://esm.sh/react-dom@19.0.0/client",
+    "html-to-image": "https://esm.sh/html-to-image@1.11.11",
     "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
     "react/": "https://esm.sh/react@^19.2.3/",
-    "react": "https://esm.sh/react@^19.2.3",
-    "html-to-image": "https://esm.sh/html-to-image@^1.11.13"
+    "vite": "https://esm.sh/vite@^7.3.1"
   }
 }
 </script>
 </head>
 <body class="text-black">
     <div id="root"></div>
-    <script type="module" src="/index.tsx"></script>
+    <script type="module" src="index.tsx"></script>
 </body>
 </html>
